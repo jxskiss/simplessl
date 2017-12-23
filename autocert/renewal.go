@@ -162,7 +162,7 @@ func (ou *ocspUpdater) update() {
 	var next time.Duration
 	// state will not be nil
 	state, _ := ou.m.ocspStates[ou.domain]
-	der, response, err := ou.m.updateOCSP(ctx, state.leaf, state.issuer)
+	der, response, err := ou.m.updateOCSPStapling(ctx, state.leaf, state.issuer)
 	if err != nil {
 		// failed
 		next = renewJitter / 2

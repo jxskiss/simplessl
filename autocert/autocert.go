@@ -244,10 +244,7 @@ func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 func (m *Manager) GetOCSPStapling(domain string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	return m.ocspStapling(ctx, domain)
-}
 
-func (m *Manager) ocspStapling(ctx context.Context, domain string) ([]byte, error) {
 	m.ocspStatesMu.Lock()
 	if s, ok := m.ocspStates[domain]; ok {
 		m.ocspStatesMu.Unlock()
@@ -263,7 +260,7 @@ func (m *Manager) ocspStapling(ctx context.Context, domain string) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	der, response, err := m.updateOCSP(ctx, cert, nil)
+	der, response, err := m.updateOCSPStapling(ctx, cert, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +296,7 @@ func (m *Manager) ocspStapling(ctx context.Context, domain string) ([]byte, erro
 	return s.ocspDER, nil
 }
 
-func (m *Manager) updateOCSP(ctx context.Context, cert *tls.Certificate, issuer *x509.Certificate) (der []byte, resp *ocsp.Response, err error) {
+func (m *Manager) updateOCSPStapling(ctx context.Context, cert *tls.Certificate, issuer *x509.Certificate) (der []byte, resp *ocsp.Response, err error) {
 	if issuer == nil {
 		issuer, err = x509.ParseCertificate(cert.Certificate[len(cert.Certificate)-1])
 		if err != nil {
@@ -332,19 +329,15 @@ func (m *Manager) updateOCSP(ctx context.Context, cert *tls.Certificate, issuer 
 var ChallengeNotFount = errors.New("cert-server: challenge not found")
 
 func (m *Manager) GetHTTP01ChallengeResponse(token string) (string, error) {
+	if m.client == nil {
+		return "", ChallengeNotFount
+	}
 	m.challengeMu.RLock()
 	defer m.challengeMu.RUnlock()
 	if _, ok := m.challenge[token]; !ok {
 		return "", ChallengeNotFount
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	client, err := m.acmeClient(ctx)
-	if err != nil {
-		return "", err
-	}
-	return client.HTTP01ChallengeResponse(token)
+	return m.client.HTTP01ChallengeResponse(token)
 }
 
 // cert returns an existing certificate either from m.state or cache.
