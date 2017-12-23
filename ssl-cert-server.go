@@ -8,23 +8,26 @@ import (
 	"encoding/pem"
 	"flag"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gocraft/web"
-	"github.com/golang/glog"
+	"github.com/jxskiss/glog"
 	"github.com/jxskiss/ssl-cert-server/autocert"
 	"golang.org/x/crypto/acme"
 )
 
-var staging = flag.Bool("staging", false, "use Let's Encrypt staging directory")
-var forceRSA = flag.Bool("force-rsa", false, "generate certificates with 2048-bit RSA keys")
-var listen = flag.String("listen", "127.0.0.1:8999", "listen address, be sure DON't open to the world")
-var manager autocert.Manager
+var (
+	staging  = flag.Bool("staging", false, "use Let's Encrypt staging directory")
+	forceRSA = flag.Bool("force-rsa", false, "generate certificates with 2048-bit RSA keys")
+	listen   = flag.String("listen", "127.0.0.1:8999", "listen address, be sure DON't open to the world")
+	manager  autocert.Manager
+)
 
 func init() {
 	flag.Parse()
-	glog.Flush()
 
 	var directoryUrl string
 	if *staging {
@@ -157,9 +160,40 @@ func (c *Context) ChallengeHandler(w web.ResponseWriter, r *web.Request) {
 	w.Write([]byte(response))
 }
 
+var stdout = log.New(os.Stdout, "", 0)
+
+func accessLoggerMiddleware(rw web.ResponseWriter, req *web.Request, next web.NextMiddlewareFunc) {
+	startTime := time.Now()
+
+	next(rw, req)
+
+	// Ammdd hhmmss Addr] Status Method URI Duration
+	const LogFormat = "A%s %s] %d %s %s %s\n"
+
+	duration := time.Since(startTime).Nanoseconds()
+	var durationUnits string
+	switch {
+	case duration > 2000000:
+		durationUnits = "ms"
+		duration /= 1000000
+	case duration > 1000:
+		durationUnits = "μs"
+		duration /= 1000
+	default:
+		durationUnits = "ns"
+	}
+	durationFormatted := fmt.Sprintf("%d%s", duration, durationUnits)
+
+	logTime := time.Now().Format("0102 150405")
+	stdout.Printf(LogFormat, logTime, req.RemoteAddr, rw.StatusCode(),
+		req.Method, req.RequestURI, durationFormatted)
+}
+
 func main() {
+	defer glog.Flush()
+
 	router := web.New(Context{}).
-		Middleware(web.LoggerMiddleware).
+		Middleware(accessLoggerMiddleware).
 		Get("/cert/:domain:[^.]+\\..+", (*Context).CertHandler).
 		Get("/ocsp/:domain:[^.]+\\..+", (*Context).OCSPStaplingHandler).
 		Get("/.well-known/acme-challenge/:token", (*Context).ChallengeHandler)
