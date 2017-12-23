@@ -122,3 +122,72 @@ func (dr *domainRenewal) next(expiry time.Time) time.Duration {
 }
 
 var testDidRenewLoop = func(next time.Duration, err error) {}
+
+type ocspUpdater struct {
+	m      *Manager
+	domain string
+
+	timerMu sync.Mutex
+	timer   *time.Timer
+}
+
+func (ou *ocspUpdater) start(next time.Time) {
+	ou.timerMu.Lock()
+	defer ou.timerMu.Unlock()
+	if ou.timer != nil {
+		return
+	}
+	ou.timer = time.AfterFunc(ou.next(next), ou.update)
+}
+
+func (ou *ocspUpdater) stop() {
+	ou.timerMu.Lock()
+	defer ou.timerMu.Unlock()
+	if ou.timer == nil {
+		return
+	}
+	ou.timer.Stop()
+	ou.timer = nil
+}
+
+func (ou *ocspUpdater) update() {
+	ou.timerMu.Lock()
+	defer ou.timerMu.Unlock()
+	if ou.timer == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	var next time.Duration
+	// state will not be nil
+	state, _ := ou.m.ocspStates[ou.domain]
+	der, response, err := ou.m.updateOCSP(ctx, state.leaf, state.issuer)
+	if err != nil {
+		// failed
+		next = renewJitter / 2
+		next += time.Duration(pseudoRand.int63n(int64(next)))
+	} else {
+		// success
+		state.Lock()
+		defer state.Unlock()
+		state.ocspDER = der
+		state.nextUpdate = response.NextUpdate
+		next = ou.next(response.NextUpdate)
+	}
+	ou.timer = time.AfterFunc(next, ou.update)
+	testOCSPDidUpdateLoop(next, err)
+}
+
+func (ou *ocspUpdater) next(expiry time.Time) time.Duration {
+	d := expiry.Sub(timeNow()) - 12*time.Hour
+	// add a bit randomness to renew deadline
+	n := pseudoRand.int63n(int64(renewJitter))
+	d -= time.Duration(n)
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+var testOCSPDidUpdateLoop = func(next time.Duration, err error) {}

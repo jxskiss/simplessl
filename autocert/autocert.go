@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	mathrand "math/rand"
 	"net/http"
 	"strconv"
@@ -31,6 +32,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/ocsp"
 )
 
 // createCertRetryAfter is how much time to wait before removing a failed state
@@ -155,10 +157,25 @@ type Manager struct {
 	tokenCertMu sync.RWMutex
 	tokenCert   map[string]*tls.Certificate
 
+	// challenge is keyed by http-01 challenge token
+	challengeMu sync.RWMutex
+	challenge   map[string]bool
+
 	// renewal tracks the set of domains currently running renewal timers.
 	// It is keyed by domain name.
 	renewalMu sync.Mutex
 	renewal   map[string]*domainRenewal
+
+	ocspUpdatersMu sync.RWMutex
+	ocspUpdaters   map[string]*ocspUpdater
+
+	ocspStatesMu sync.RWMutex
+	ocspStates   map[string]*ocspState
+}
+
+func (m *Manager) GetCertificateByName(name string) (*tls.Certificate, error) {
+	helloInfo := &tls.ClientHelloInfo{ServerName: name}
+	return m.GetCertificate(helloInfo)
 }
 
 // GetCertificate implements the tls.Config.GetCertificate hook.
@@ -222,6 +239,112 @@ func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 	}
 	m.cachePut(ctx, name, cert)
 	return cert, nil
+}
+
+func (m *Manager) GetOCSPStapling(domain string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return m.ocspStapling(ctx, domain)
+}
+
+func (m *Manager) ocspStapling(ctx context.Context, domain string) ([]byte, error) {
+	m.ocspStatesMu.Lock()
+	if s, ok := m.ocspStates[domain]; ok {
+		m.ocspStatesMu.Unlock()
+		s.RLock()
+		defer s.RUnlock()
+		return s.ocspDER, nil
+	}
+	defer m.ocspStatesMu.Unlock()
+
+	// only request ocsp stapling for cached cert
+	// don't request new certificate here
+	cert, err := m.cert(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+	der, response, err := m.updateOCSP(ctx, cert, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	issuer, _ := x509.ParseCertificate(cert.Certificate[len(cert.Certificate)-1])
+	s := &ocspState{
+		leaf:       cert,
+		issuer:     issuer,
+		ocspDER:    der,
+		nextUpdate: response.NextUpdate,
+	}
+	if m.ocspStates == nil {
+		m.ocspStates = make(map[string]*ocspState)
+	}
+	m.ocspStates[domain] = s
+
+	// start OCSP Stapling updater timer loop
+	go func() {
+		m.ocspUpdatersMu.Lock()
+		defer m.ocspUpdatersMu.Unlock()
+		if m.ocspUpdaters[domain] != nil {
+			// another goroutine is already on it
+			return
+		}
+		if m.ocspUpdaters == nil {
+			m.ocspUpdaters = make(map[string]*ocspUpdater)
+		}
+		ou := &ocspUpdater{m: m, domain: domain}
+		m.ocspUpdaters[domain] = ou
+		go ou.start(s.nextUpdate)
+	}()
+
+	return s.ocspDER, nil
+}
+
+func (m *Manager) updateOCSP(ctx context.Context, cert *tls.Certificate, issuer *x509.Certificate) (der []byte, resp *ocsp.Response, err error) {
+	if issuer == nil {
+		issuer, err = x509.ParseCertificate(cert.Certificate[len(cert.Certificate)-1])
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	ocspReq, err := ocsp.CreateRequest(cert.Leaf, issuer, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	httpResp, err := http.Post(
+		cert.Leaf.OCSPServer[0],
+		"application/ocsp-request",
+		bytes.NewBuffer(ocspReq))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer httpResp.Body.Close()
+	body, err := ioutil.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err = ocsp.ParseResponse(body, issuer)
+	if err != nil {
+		return nil, nil, err
+	}
+	return body, resp, nil
+}
+
+var ChallengeNotFount = errors.New("cert-server: challenge not found")
+
+func (m *Manager) GetHTTP01ChallengeResponse(token string) (string, error) {
+	m.challengeMu.RLock()
+	defer m.challengeMu.RUnlock()
+	if _, ok := m.challenge[token]; !ok {
+		return "", ChallengeNotFount
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	client, err := m.acmeClient(ctx)
+	if err != nil {
+		return "", err
+	}
+	return client.HTTP01ChallengeResponse(token)
 }
 
 // cert returns an existing certificate either from m.state or cache.
@@ -317,13 +440,11 @@ func (m *Manager) cachePut(ctx context.Context, domain string, tlscert *tls.Cert
 	// private
 	switch key := tlscert.PrivateKey.(type) {
 	case *ecdsa.PrivateKey:
-		if err := encodeECDSAKey(&buf, key); err != nil {
+		if err := EncodeECDSAKey(&buf, key); err != nil {
 			return err
 		}
 	case *rsa.PrivateKey:
-		b := x509.MarshalPKCS1PrivateKey(key)
-		pb := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: b}
-		if err := pem.Encode(&buf, pb); err != nil {
+		if err := EncodeRSAKey(&buf, key); err != nil {
 			return err
 		}
 	default:
@@ -341,7 +462,13 @@ func (m *Manager) cachePut(ctx context.Context, domain string, tlscert *tls.Cert
 	return m.Cache.Put(ctx, domain, buf.Bytes())
 }
 
-func encodeECDSAKey(w io.Writer, key *ecdsa.PrivateKey) error {
+func EncodeRSAKey(w io.Writer, key *rsa.PrivateKey) error {
+	b := x509.MarshalPKCS1PrivateKey(key)
+	pb := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: b}
+	return pem.Encode(w, pb)
+}
+
+func EncodeECDSAKey(w io.Writer, key *ecdsa.PrivateKey) error {
 	b, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
 		return err
@@ -489,6 +616,10 @@ func (m *Manager) verify(ctx context.Context, domain string) error {
 	// TODO: consider authz.Combinations
 	var chal *acme.Challenge
 	for _, c := range authz.Challenges {
+		if c.Type == "http-01" {
+			chal = c
+			break
+		}
 		if c.Type == "tls-sni-02" {
 			chal = c
 			break
@@ -501,28 +632,45 @@ func (m *Manager) verify(ctx context.Context, domain string) error {
 		return errors.New("acme/autocert: no supported challenge type found")
 	}
 
-	// create a token cert for the challenge response
-	var (
-		cert tls.Certificate
-		name string
-	)
-	switch chal.Type {
-	case "tls-sni-01":
-		cert, name, err = client.TLSSNI01ChallengeCert(chal.Token)
-	case "tls-sni-02":
-		cert, name, err = client.TLSSNI02ChallengeCert(chal.Token)
-	default:
-		err = fmt.Errorf("acme/autocert: unknown challenge type %q", chal.Type)
+	// http-01 challenge is preferred for cert server
+	if chal.Type == "http-01" {
+		m.challengeMu.Lock()
+		if m.challenge == nil {
+			m.challenge = make(map[string]bool)
+		}
+		m.challenge[chal.Token] = true
+		m.challengeMu.Unlock()
+
+		defer func() {
+			// verification has ended at this point, clear the token
+			m.challengeMu.Lock()
+			delete(m.challenge, chal.Token)
+			m.challengeMu.Unlock()
+		}()
+	} else {
+		// create a token cert for the challenge response
+		var (
+			cert tls.Certificate
+			name string
+		)
+		switch chal.Type {
+		case "tls-sni-01":
+			cert, name, err = client.TLSSNI01ChallengeCert(chal.Token)
+		case "tls-sin-02":
+			cert, name, err = client.TLSSNI02ChallengeCert(chal.Token)
+		default:
+			err = fmt.Errorf("acme/autocert: unknown challenge type %q", chal.Type)
+		}
+		if err != nil {
+			return err
+		}
+		m.putTokenCert(ctx, name, &cert)
+		defer func() {
+			// verification has ended at this point
+			// don't need token cert anymore
+			go m.deleteTokenCert(name)
+		}()
 	}
-	if err != nil {
-		return err
-	}
-	m.putTokenCert(ctx, name, &cert)
-	defer func() {
-		// verification has ended at this point
-		// don't need token cert anymore
-		go m.deleteTokenCert(name)
-	}()
 
 	// ready to fulfill the challenge
 	if _, err := client.Accept(ctx, chal); err != nil {
@@ -608,7 +756,7 @@ func (m *Manager) accountKey(ctx context.Context) (crypto.Signer, error) {
 			return nil, err
 		}
 		var buf bytes.Buffer
-		if err := encodeECDSAKey(&buf, key); err != nil {
+		if err := EncodeECDSAKey(&buf, key); err != nil {
 			return nil, err
 		}
 		if err := m.Cache.Put(ctx, keyName, buf.Bytes()); err != nil {
@@ -696,6 +844,14 @@ func (s *certState) tlscert() (*tls.Certificate, error) {
 		Certificate: s.cert,
 		Leaf:        s.leaf,
 	}, nil
+}
+
+type ocspState struct {
+	sync.RWMutex
+	leaf       *tls.Certificate
+	issuer     *x509.Certificate
+	ocspDER    []byte
+	nextUpdate time.Time
 }
 
 // certRequest creates a certificate request for the given common name cn
