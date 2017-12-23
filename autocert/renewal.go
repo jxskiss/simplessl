@@ -180,7 +180,7 @@ func (ou *ocspUpdater) update() {
 }
 
 func (ou *ocspUpdater) next(expiry time.Time) time.Duration {
-	d := expiry.Sub(timeNow()) - 12*time.Hour
+	d := expiry.Sub(timeNow()) - 48*time.Hour
 	// add a bit randomness to renew deadline
 	n := pseudoRand.int63n(int64(renewJitter))
 	d -= time.Duration(n)

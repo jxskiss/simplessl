@@ -38,17 +38,95 @@ function _M.new(options)
     return setmetatable({ options = options }, { __index = _M })
 end
 
-local function request_cert(self, domain)
+local function safe_connect(self)
+    -- TODO: do we really need this complication?
+
+    local lock_key = "lock:backend:connect"
+    local failure_key = "backend:failure"
+    local cache = ngx.shared.ssl_certs_cache
+
+    -- failure: "sleep_seconds:previous_time"
+    local failure, cache_err = cache:get(failure_key)
+    if cache_err then
+        return nil, "failed to get backend failure status from cache"
+    end
+    local sleep, previous
+    if failure then
+        sleep, previous = failure:match("([^:]+):(.+)")
+        if ngx.now() - tonumber(previous) < tonumber(sleep) then
+            return nil, "backend is in unhealthy state"
+        end
+    end
+
+    local lock, lock_err = resty_lock:new("ssl_certs_cache", {exptime = 1, timeout = 1})
+    if not lock then
+        return nil, "failed to create lock: " .. (lock_err or "nil")
+    end
+    local elapsed, lock_err = lock:lock(lock_key)
+    if not elapsed then
+        return nil, "failed to acquire lock: " .. (lock_err or "nil")
+    end
+
+    -- Check again.
+    failure, cache_err = cache:get(failure_key)
+    if cache_err then
+        return nil, "failed to get backend failure status from cache"
+    end
+    if failure then
+        sleep, previous = failure:match("([^:]+):(.+)")
+        if ngx.now() - tonumber(previous) < tonumber(sleep) then
+            local ok, lock_err = lock:unlock()
+            if not ok then
+                ngx.log(ngx.ERR, "failed to release lock: ", lock_err)
+            end
+            return nil, "backend is in unhealthy state"
+        end
+    end
+
     local httpc = resty_http.new()
     httpc:set_timeout(500)
-    local ok, err = httpc:connect(self.options["backend_host"], self.options["backend_port"])
+    local ok, conn_err = httpc:connect(self.options["backend_host"], self.options["backend_port"])
     if not ok then
-        return nil, nil, nil, "cert: failed to connect backend server: " .. err
+        -- Block further connections to avoid slowing down nginx too much for busy website
+        sleep = sleep or 2
+        if failure then
+            -- Connect to backend as soon as possible, no more than 5 minutes.
+            sleep = sleep * 2
+            if sleep > 300 then
+                sleep = 300
+            end
+        end
+        ngx.log(ngx.ERR, "backend is in unhealthy state, block for ", sleep, " seconds")
+        ok, err = cache:set(failure_key, sleep .. ":" .. ngx.now())
+        local ok, lock_err = lock:unlock()
+        if not ok then
+            ngx.log(ngx.ERR, "failed to release lock: ", lock_err)
+        end
+        return nil, conn_err
+    end
+
+    -- Connect backend success, delete the failure status.
+    local ok, cache_err = cache:delete(failure_key)
+    if not ok then
+        ngx.log(ngx.ERR, "failed to delete backend failure key: ", cache_err)
+    end
+
+    local ok, lock_err = lock:unlock()
+    if not ok then
+        ngx.log(ngx.ERR, "failed to release lock: ", lock_err)
+    end
+    return httpc
+end
+
+local function request_cert(self, domain, timeout)
+    local httpc, err = safe_connect(self)
+    if err ~= nil then
+        return nil, nil, nil, err
     end
 
     -- Get the certificate from backend cert server.
     local res, body, cert_json, suc, err
-    httpc:set_timeout(60000)  -- 60 seconds
+    httpc:set_timeout(timeout * 1000)
     res, err = httpc:request({ path = "/cert/" .. domain })
     if not err then
         if res.status ~= 200 then
@@ -71,11 +149,11 @@ local function request_cert(self, domain)
     local cert_der, pkey_der
     cert_der, err = ssl.cert_pem_to_der(cert_json["cert"])
     if not cert_der or err then
-        return nil, nil, nil, "failed to convert certificate from PEM to DER: " .. err
+        return nil, nil, nil, "failed to convert certificate from PEM to DER: " .. (err or "nil")
     end
     pkey_der, err = ssl.priv_key_pem_to_der(cert_json["pkey"])
     if not pkey_der or _err then
-        return nil, nil, nil, "failed to convert private key from PEM to DER: " .. err
+        return nil, nil, nil, "failed to convert private key from PEM to DER: " .. (err or "nil")
     end
 
     return cert_der, pkey_der, cert_json["ttl"]
@@ -89,6 +167,7 @@ local function get_cert(self, domain)
     local cert_key = "cert:" .. domain .. ":latest"
     local pkey_key = "pkey:" .. domain .. ":latest"
     local lock_key = "lock:cert:" .. domain
+    local lock_exptime = 120
 
     cert, cache_err = cache:get(cert_key)
     pkey, cache_err = cache:get(pkey_key)
@@ -97,41 +176,39 @@ local function get_cert(self, domain)
     end
 
     -- Lock to prevent multiple requests for same domain.
-    lock, lock_err = resty_lock:new("ssl_certs_cache")
+    lock, lock_err = resty_lock:new("ssl_certs_cache", {exptime = lock_exptime, timeout = lock_exptime})
     if not lock then
-        return nil, nil, "failed to create lock: " .. lock_err
+        return nil, nil, "failed to create lock: " .. (lock_err or "nil")
     end
     elapsed, lock_err = lock:lock(lock_key)
     if not elapsed then
-        return nil, nil, "failed to acquire lock: " .. lock_err
+        return nil, nil, "failed to acquire lock: " .. (lock_err or "nil")
     end
 
     -- Check the cache again after holding the lock.
-    cert, err = cache:get(cert_key)
-    pkey, err = cache:get(pkey_key)
+    cert, cache_err = cache:get(cert_key)
+    pkey, cache_err = cache:get(pkey_key)
     if not (cert and pkey) then
         -- We are the first, request certificate from backend server.
-        cert, pkey, ttl, err = request_cert(self, domain)
+        cert, pkey, ttl, err = request_cert(self, domain, lock_exptime - 10)
         if (cert and pkey) then
             -- Cache the newly requested certificate as long living backup.
             ok, cache_err, forcible = cache:set(bak_cert_key, cert)
             ok, cache_err, forcible = cache:set(bak_pkey_key, pkey)
             if forcible then
-                ngx.log(ngx.WARNING, "'lua_shared_dict ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while caching backup certificate)")
+                ngx.log(ngx.WARN, "'lua_shared_dict ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while caching backup certificate)")
             end
         else
             -- Since certificate renewal happens far before expired on backend server,
-            -- we can use the previous request result from cache if it exists.
-            -- This avoids every request triggering certificate request to backend,
-            -- which slow down nginx's performance and rise up nginx's pressure on busy site.
-            --
+            -- most probably the previous backup certificate is valid, we use it if it exists.
+            -- This avoids further requests within next cache period triggering certificate
+            -- requests to backend, which slow down nginx's performance and rise up nginx's
+            -- pressure on busy site.
             -- Also we consider an recently-expired certificate is more friendly to site user
             -- than fallback to self-signed certificate.
             cert, cache_err = cache:get(bak_cert_key)
             pkey, cache_err = cache:get(bak_pkey_key)
-
-            -- TODO: we should handle the backend failure more carefully here,
-            -- maybe inserting a stub value into the cache.
+            ttl = 300
         end
 
         -- Cache the certificate and private key.
@@ -139,7 +216,7 @@ local function get_cert(self, domain)
             ok, cache_err, forcible = cache:set(cert_key, cert, ttl)
             ok, cache_err, forcible = cache:set(pkey_key, pkey, ttl)
             if forcible then
-                ngx.log(ngx.WARNING, "'lua_shared_dict ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while caching new certificate)")
+                ngx.log(ngx.WARN, "'lua_shared_dict ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while caching new certificate)")
             end
         end
     end
@@ -163,36 +240,32 @@ local function set_cert(self, cert_der, pkey_der)
     -- Clear the default fallback certificates (defined in the hard-coded nginx configuration).
     ok, err = ssl.clear_certs()
     if not ok then
-        return false, "failed to clear existing (fallback) certificates: " .. err
+        return false, "failed to clear existing (fallback) certificates: " .. (err or "nil")
     end
 
     -- Set the public certificate chain.
     ok, err = ssl.set_der_cert(cert_der)
     if not ok then
-        return false, "failed to set certificate: " .. err
+        return false, "failed to set certificate: " .. (err or "nil")
     end
 
     -- Set the private key.
     ok, err = ssl.set_der_priv_key(pkey_der)
     if not ok then
-        return false, "failed to set private key: " .. err
+        return false, "failed to set private key: " .. (err or "nil")
     end
 
     return true
 end
 
-local function request_stapling(self, domain)
-    local httpc = resty_http.new()
-    httpc:set_timeout(500)
-    local ok, err = httpc:connect(self.options["backend_host"], self.options["backend_port"])
-    if not ok then
-        return nil, nil, nil, "stapling: failed to connect backend server: " .. err
+local function request_stapling(self, domain, timeout)
+    local httpc, err = safe_connect(self)
+    if err ~= nil then
+        return nil, err
     end
 
     -- Get OCSP stapling from backend cert server.
     local stapling
-    -- TODO: resolve ttl and expires from response headers. See: https://tools.ietf.org/html/rfc5019#section-6
-    local ttl, expires = 3600, 3600
     httpc:set_timeout(10000)  -- 10 seconds
     local res, err = httpc:request({ path = "/ocsp/" .. domain })
     if not err then
@@ -203,11 +276,20 @@ local function request_stapling(self, domain)
         end
     end
     if err then
-        return nil, nil, nil, err
+        return nil, nil, err
+    end
+
+    -- Parse TTL from response header "Cache-Control".
+    local ttl = 60
+    if res.headers["Cache-Control"] then
+        local m, err = ngx.re.match(res.headers["Cache-Control"], [[max-age=(\d+)]])
+        if m then
+            ttl = tonumber(m[1])
+        end
     end
 
     httpc:set_keepalive()
-    return stapling, ttl, expires
+    return stapling, ttl
 end
 
 local function get_stapling(self, domain)
@@ -216,6 +298,7 @@ local function get_stapling(self, domain)
     local bak_stapling_key = "stapling:" .. domain
     local stapling_key = "stapling:" .. domain .. ":latest"
     local lock_key = "lock:stapling:" .. domain
+    local lock_exptime = 10
 
     stapling, cache_err = cache:get(stapling_key)
     if stapling then
@@ -223,38 +306,34 @@ local function get_stapling(self, domain)
     end
 
     -- Lock to prevent multiple requests for same domain.
-    lock, lock_err = resty_lock:new("ssl_certs_cache")
+    lock, lock_err = resty_lock:new("ssl_certs_cache", {exptime = lock_exptime, timeout=lock_exptime})
     if not lock then
-        return nil, "failed to create lock: " .. lock_err
+        return nil, "failed to create lock: " .. (lock_err or "nil")
     end
     elapsed, lock_err = lock:lock(lock_key)
     if not elapsed then
-        return nil, "failed to acquire lock: " .. lock_err
+        return nil, "failed to acquire lock: " .. (lock_err or "nil")
     end
 
     stapling, cache_err = cache:get(stapling_key)
     if not stapling then
-        stapling, ttl, expires, err = request_stapling(self, domain)
+        -- We are the first, request OCSP stapling from backend server.
+        stapling, ttl, err = request_stapling(self, domain, lock_exptime - 2)
         if stapling then
-            ok, cache_err, forcible = cache:set(bak_stapling_key, stapling, expires)
+            ok, cache_err, forcible = cache:set(bak_stapling_key, stapling, ttl)
             if forcible then
-                ngx.log(ngx.WARNING, "'lua_shared_dict ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while caching backup OCSP stapling)")
+                ngx.log(ngx.WARN, "'lua_shared_dict ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while caching backup OCSP stapling)")
             end
         else
             -- In case of backend failure, check backup for unexpired response.
             stapling, cache_err = cache:get(bak_stapling_key)
-            expires, cache_err = cache:ttl(bak_stapling_key)
-            -- TODO: calculate ttl from expires.
-            ttl = 600
-
-            -- TODO: we should handle the backend failure more carefully here,
-            -- maybe inserting a stub value into the cache.
+            ttl, cache_err = cache:ttl(bak_stapling_key)
         end
 
         if (stapling and ttl) then
             ok, cache_err, forcible = cache:set(stapling_key, stapling, ttl)
             if forcible then
-                ngx.log(ngx.WARNING, "'lua_shared_dict ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while caching new OCSP stapling)")
+                ngx.log(ngx.WARN, "'lua_shared_dict ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while caching new OCSP stapling)")
             end
         end
     end

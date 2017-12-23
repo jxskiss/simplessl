@@ -241,7 +241,7 @@ func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 	return cert, nil
 }
 
-func (m *Manager) GetOCSPStapling(domain string) ([]byte, error) {
+func (m *Manager) GetOCSPStapling(domain string) ([]byte, time.Time, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -250,7 +250,7 @@ func (m *Manager) GetOCSPStapling(domain string) ([]byte, error) {
 		m.ocspStatesMu.Unlock()
 		s.RLock()
 		defer s.RUnlock()
-		return s.ocspDER, nil
+		return s.ocspDER, s.nextUpdate, nil
 	}
 	defer m.ocspStatesMu.Unlock()
 
@@ -258,11 +258,11 @@ func (m *Manager) GetOCSPStapling(domain string) ([]byte, error) {
 	// don't request new certificate here
 	cert, err := m.cert(ctx, domain)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	der, response, err := m.updateOCSPStapling(ctx, cert, nil)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 
 	issuer, _ := x509.ParseCertificate(cert.Certificate[len(cert.Certificate)-1])
@@ -293,7 +293,7 @@ func (m *Manager) GetOCSPStapling(domain string) ([]byte, error) {
 		go ou.start(s.nextUpdate)
 	}()
 
-	return s.ocspDER, nil
+	return s.ocspDER, s.nextUpdate, nil
 }
 
 func (m *Manager) updateOCSPStapling(ctx context.Context, cert *tls.Certificate, issuer *x509.Certificate) (der []byte, resp *ocsp.Response, err error) {
@@ -370,7 +370,15 @@ func (m *Manager) cert(ctx context.Context, name string) (*tls.Certificate, erro
 	}
 	m.state[name] = s
 	go m.renew(name, s.key, s.leaf.NotAfter)
-	return cert, nil
+
+	// After a rather long time down, we may get expired certificate from cache,
+	// give the renewal goroutine a second to get work done.
+	if cert.Leaf.NotAfter.Sub(time.Now()) <= 60 * time.Second {
+		time.Sleep(time.Second)
+		cert, err = m.cacheGet(ctx, name)
+	}
+
+	return cert, err
 }
 
 // cacheGet always returns a valid certificate, or an error otherwise.

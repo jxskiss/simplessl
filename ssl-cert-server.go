@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"flag"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gocraft/web"
 	"github.com/golang/glog"
@@ -51,6 +53,22 @@ func (c *Context) CertHandler(w web.ResponseWriter, r *web.Request) {
 	}
 
 	var (
+		now        = time.Now()
+		ttl        = cert.Leaf.NotAfter.Sub(now)
+		ttlSeconds int
+	)
+	if ttl <= 0 {
+		glog.Errorf("expired certificate for domain: %s", domain)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	if ttl > 3600*time.Second {
+		ttlSeconds = 3600
+	} else {
+		ttlSeconds = int(ttl.Seconds() * 0.8)
+	}
+
+	var (
 		certBuf    bytes.Buffer
 		privKeyBuf bytes.Buffer
 	)
@@ -85,7 +103,7 @@ func (c *Context) CertHandler(w web.ResponseWriter, r *web.Request) {
 		Cert string `json:"cert"`
 		PKey string `json:"pkey"`
 		TTL  int    `json:"ttl"` // in seconds
-	}{string(certBuf.Bytes()), string(privKeyBuf.Bytes()), 3600})
+	}{string(certBuf.Bytes()), string(privKeyBuf.Bytes()), ttlSeconds})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(response)
@@ -93,14 +111,33 @@ func (c *Context) CertHandler(w web.ResponseWriter, r *web.Request) {
 
 func (c *Context) OCSPStaplingHandler(w web.ResponseWriter, r *web.Request) {
 	domain := r.PathParams["domain"]
-	response, err := manager.GetOCSPStapling(domain)
+	response, nextUpdate, err := manager.GetOCSPStapling(domain)
 	if err != nil {
-		glog.Errorf("ocsp stapling: %s", err)
-		w.WriteHeader(http.StatusInternalServerError)
+		if err == autocert.ErrCacheMiss {
+			w.WriteHeader(http.StatusNotFound)
+		} else {
+			glog.Errorf("ocsp stapling: %s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
 		return
 	}
-	// TODO: add "Expires" and "Cache" headers
+	var (
+		now        = time.Now()
+		ttl        = nextUpdate.Sub(now)
+		ttlSeconds int
+	)
+	if ttl <= 0 {
+		glog.Errorf("expired OCSP stapling for domain: %s", domain)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	if ttl > 3600*time.Second {
+		ttlSeconds = 3600
+	} else {
+		ttlSeconds = int(ttl.Seconds() * 0.8)
+	}
 	w.Header().Set("Content-Type", "application/ocsp-response")
+	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d,public,no-transform,must-revalidate", ttlSeconds))
 	w.Write(response)
 }
 
