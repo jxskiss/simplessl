@@ -3,4 +3,6 @@ t/error.log
 lua-resty-http*
 luacov*
 
+.idea/
+.vscode/
 *.exe
