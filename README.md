@@ -8,11 +8,13 @@ This uses the `ssl_certificate_by_lua` functionality in OpenResty 1.9.7.2+.
 
 By using ssl-cert-server to register SSL certificates with Let's Encrypt, you agree to the [Let's Encrypt Subscriber Agreement](https://letsencrypt.org/repository/).
 
-I got inspires and stolen some code from the awesome project [lua-resty-auto-ssl](https://github.com/GUI/lua-resty-auto-ssl), many thanks 😀
+I got inspires and stole some code from the awesome project [lua-resty-auto-ssl](https://github.com/GUI/lua-resty-auto-ssl) and Golang's autocert package, many thanks 😀
 
 ## Status
 
-Early development, using in production environment is NOT recommended.
+Early development, considered usable.
+
+Users are highly RECOMMENDED to do testing in your environment.
 
 ## Configuration Example
 
@@ -89,6 +91,6 @@ http {
 
 ## TODO
 
-1. Implement better cache strategy;
-2. Handle backend server failure more robustly;
+1. ~~Implement better cache strategy;~~
+2. ~~Handle backend server failure more robustly;~~
 3. Test case for both cert-server and openresty library.

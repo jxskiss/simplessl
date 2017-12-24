@@ -162,7 +162,7 @@ func (ou *ocspUpdater) update() {
 	var next time.Duration
 	// state will not be nil
 	state, _ := ou.m.ocspStates[ou.domain]
-	der, response, err := ou.m.updateOCSP(ctx, state.leaf, state.issuer)
+	der, response, err := ou.m.updateOCSPStapling(ctx, state.leaf, state.issuer)
 	if err != nil {
 		// failed
 		next = renewJitter / 2
@@ -180,7 +180,7 @@ func (ou *ocspUpdater) update() {
 }
 
 func (ou *ocspUpdater) next(expiry time.Time) time.Duration {
-	d := expiry.Sub(timeNow()) - 12*time.Hour
+	d := expiry.Sub(timeNow()) - 48*time.Hour
 	// add a bit randomness to renew deadline
 	n := pseudoRand.int63n(int64(renewJitter))
 	d -= time.Duration(n)
