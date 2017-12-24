@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"time"
+	mathrand "math/rand"
 
 	"github.com/gocraft/web"
 	"github.com/jxskiss/glog"
@@ -69,6 +70,11 @@ func (c *Context) CertHandler(w web.ResponseWriter, r *web.Request) {
 		ttlSeconds = 3600
 	} else {
 		ttlSeconds = int(ttl.Seconds() * 0.8)
+	}
+	// add a little randomness to the TLL
+	n := mathrand.Intn(100)
+	if n < ttlSeconds {
+		ttlSeconds -= n
 	}
 
 	var (
@@ -139,6 +145,12 @@ func (c *Context) OCSPStaplingHandler(w web.ResponseWriter, r *web.Request) {
 	} else {
 		ttlSeconds = int(ttl.Seconds() * 0.8)
 	}
+	// add a little randomness to the TTL
+	n := mathrand.Intn(100)
+	if n < ttlSeconds {
+		ttlSeconds -= n
+	}
+
 	w.Header().Set("Content-Type", "application/ocsp-response")
 	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d,public,no-transform,must-revalidate", ttlSeconds))
 	w.Write(response)
