@@ -197,5 +197,7 @@ func main() {
 		Get("/cert/:domain:[^.]+\\..+", (*Context).CertHandler).
 		Get("/ocsp/:domain:[^.]+\\..+", (*Context).OCSPStaplingHandler).
 		Get("/.well-known/acme-challenge/:token", (*Context).ChallengeHandler)
+
+	glog.Infof("Listening on http://%s", *listen)
 	glog.Fatal(http.ListenAndServe(*listen, router))
 }
