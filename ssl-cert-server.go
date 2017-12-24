@@ -9,10 +9,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	mathrand "math/rand"
 	"net/http"
 	"os"
 	"time"
-	mathrand "math/rand"
 
 	"github.com/gocraft/web"
 	"github.com/jxskiss/glog"
@@ -21,9 +21,12 @@ import (
 )
 
 var (
-	staging  = flag.Bool("staging", false, "use Let's Encrypt staging directory")
-	forceRSA = flag.Bool("force-rsa", false, "generate certificates with 2048-bit RSA keys")
 	listen   = flag.String("listen", "127.0.0.1:8999", "listen address, be sure DON't open to the world")
+	staging  = flag.Bool("staging", false, "use Let's Encrypt staging directory (default false)")
+	cacheDir = flag.String("cache-dir", "./secret-dir", "which directory to cache certificates")
+	before   = flag.Int("before", 30, "renew certificates before how many days")
+	email    = flag.String("email", "", "contact email, if Let's Encrypt client's key is already registered, this is not used")
+	forceRSA = flag.Bool("force-rsa", false, "generate certificates with 2048-bit RSA keys (default false)")
 	manager  autocert.Manager
 )
 
@@ -38,10 +41,12 @@ func init() {
 	}
 
 	manager = autocert.Manager{
-		Cache:    autocert.DirCache("secret-dir"),
-		Prompt:   autocert.AcceptTOS,
-		Client:   &acme.Client{DirectoryURL: directoryUrl},
-		ForceRSA: *forceRSA,
+		Prompt:      autocert.AcceptTOS,
+		Cache:       autocert.DirCache(*cacheDir),
+		RenewBefore: time.Duration(*before) * 24 * time.Hour,
+		Client:      &acme.Client{DirectoryURL: directoryUrl},
+		Email:       *email,
+		ForceRSA:    *forceRSA,
 	}
 }
 
