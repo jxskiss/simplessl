@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"encoding/json"
@@ -12,6 +13,8 @@ import (
 	mathrand "math/rand"
 	"net/http"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/gocraft/web"
@@ -20,18 +23,48 @@ import (
 	"golang.org/x/crypto/acme"
 )
 
+type StringArray []string
+
+// Implement flag.Value interface.
+func (v *StringArray) Set(s string) error {
+	*v = append(*v, s)
+	return nil
+}
+
+// Implement flag.Value interface.
+func (v *StringArray) String() string {
+	return strings.Join(*v, ",")
+}
+
 var (
+	manager         autocert.Manager
+	domainWhitelist StringArray
+
 	listen   = flag.String("listen", "127.0.0.1:8999", "listen address, be sure DON't open to the world")
 	staging  = flag.Bool("staging", false, "use Let's Encrypt staging directory (default false)")
 	cacheDir = flag.String("cache-dir", "./secret-dir", "which directory to cache certificates")
 	before   = flag.Int("before", 30, "renew certificates before how many days")
 	email    = flag.String("email", "", "contact email, if Let's Encrypt client's key is already registered, this is not used")
 	forceRSA = flag.Bool("force-rsa", false, "generate certificates with 2048-bit RSA keys (default false)")
-	manager  autocert.Manager
+	pattern  = flag.String("pattern", "", "allowed domain regex pattern using POSIX ERE (egrep) syntax, will be ignored when domain parameters supplied")
 )
 
 func init() {
+	flag.Var(&domainWhitelist, "domain", "allowed domain names (may be given multiple times)")
+
 	flag.Parse()
+
+	var hostPolicy autocert.HostPolicy
+	if len(domainWhitelist) > 0 {
+		hostPolicy = autocert.HostWhitelist(domainWhitelist...)
+	} else if *pattern != "" {
+		hostPolicy = autocert.HostRegexp(regexp.MustCompilePOSIX(*pattern))
+	} else {
+		// allow any domain by default
+		hostPolicy = func(ctx context.Context, host string) error {
+			return nil
+		}
+	}
 
 	var directoryUrl string
 	if *staging {
@@ -47,17 +80,25 @@ func init() {
 		Client:      &acme.Client{DirectoryURL: directoryUrl},
 		Email:       *email,
 		ForceRSA:    *forceRSA,
+		HostPolicy:  hostPolicy,
 	}
 }
 
 type Context struct{}
 
-func (c *Context) CertHandler(w web.ResponseWriter, r *web.Request) {
+func (c *Context) CertificateHandler(w web.ResponseWriter, r *web.Request) {
 	domain := r.PathParams["domain"]
 	cert, err := manager.GetCertificateByName(domain)
 	if err != nil {
-		glog.Errorf("failed getting cert: %s", err)
-		w.WriteHeader(http.StatusInternalServerError)
+		if err == autocert.ErrNotPermitted {
+			glog.Warningf("domain name not permitted: %s", domain)
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte("Domain name not permitted."))
+		} else {
+			glog.Errorf("failed getting cert: %s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Error getting certificate."))
+		}
 		return
 	}
 
@@ -218,7 +259,7 @@ func main() {
 
 	router := web.New(Context{}).
 		Middleware(accessLoggerMiddleware).
-		Get("/cert/:domain:[^.]+\\..+", (*Context).CertHandler).
+		Get("/cert/:domain:[^.]+\\..+", (*Context).CertificateHandler).
 		Get("/ocsp/:domain:[^.]+\\..+", (*Context).OCSPStaplingHandler).
 		Get("/.well-known/acme-challenge/:token", (*Context).ChallengeHandler)
 

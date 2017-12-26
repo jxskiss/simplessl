@@ -26,6 +26,7 @@ import (
 	"io/ioutil"
 	mathrand "math/rand"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,9 @@ import (
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/ocsp"
 )
+
+// ErrCacheMiss is returned when a certificate is not found in cache.
+var ErrNotPermitted = errors.New("ssl-cert-server/autocert: domain name not permitted")
 
 // createCertRetryAfter is how much time to wait before removing a failed state
 // entry due to an unsuccessful createCert call.
@@ -71,6 +75,15 @@ func HostWhitelist(hosts ...string) HostPolicy {
 	return func(_ context.Context, host string) error {
 		if !whitelist[host] {
 			return errors.New("acme/autocert: host not configured")
+		}
+		return nil
+	}
+}
+
+func HostRegexp(pattern *regexp.Regexp) HostPolicy {
+	return func(_ context.Context, host string) error {
+		if !pattern.MatchString(host) {
+			return errors.New("ssl-cert-server/autocert: host not matched")
 		}
 		return nil
 	}
@@ -231,7 +244,7 @@ func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 
 	// first-time
 	if err := m.hostPolicy()(ctx, name); err != nil {
-		return nil, err
+		return nil, ErrNotPermitted
 	}
 	cert, err = m.createCert(ctx, name)
 	if err != nil {
@@ -373,7 +386,7 @@ func (m *Manager) cert(ctx context.Context, name string) (*tls.Certificate, erro
 
 	// After a rather long time down, we may get expired certificate from cache,
 	// give the renewal goroutine a second to get work done.
-	if cert.Leaf.NotAfter.Sub(time.Now()) <= 60 * time.Second {
+	if cert.Leaf.NotAfter.Sub(time.Now()) <= 60*time.Second {
 		time.Sleep(time.Second)
 		cert, err = m.cacheGet(ctx, name)
 	}
