@@ -72,7 +72,7 @@ local function _safe_set_cache(values)
             ngx.log(ngx.WARN, "'lua_shared_dict ssl_certs_cache' might be too small - consider increasing its size")
         end
         if not ok then
-            _log_unlock(lock, "lock:_safe_set_cache")
+            _log_unlock(lock)
             return false, "failed to set cache: " .. cache_err
         end
     end
@@ -82,7 +82,7 @@ local function _safe_set_cache(values)
 end
 
 local function _make_request(client, opts, timeout, decode_json)
-    timeout = timeout or 1
+    timeout = timeout or 5
     client:set_timeout(timeout * 1000)
     local res, err = client:request(opts)
     local body, headers
@@ -134,6 +134,7 @@ local function safe_connect(self)
     -- Check again after holding lock.
     failure, cache_err = cache:get(failure_key)
     if cache_err then
+        _log_unlock(lock)
         return nil, "failed to get backend failure status from cache"
     end
     if failure then
@@ -150,7 +151,7 @@ local function safe_connect(self)
     httpc:set_timeout(500)
     local ok, conn_err = httpc:connect(self.options["backend_host"], self.options["backend_port"])
     if not ok then
-        -- Block further connections to avoid slowing down nginx too much for busy website
+        -- Block further connections to avoid slowing down nginx too much for busy website.
         -- Connect to backend as soon as possible, no more than 5 minutes.
         if not sleep then
             sleep = 2
@@ -170,9 +171,11 @@ local function safe_connect(self)
     end
 
     -- Connect backend success, clear failure status if exists.
-    local ok, cache_err = cache:delete(failure_key)
-    if not ok then
-        ngx.log(ngx.ERR, "failed to delete backend failure key: ", cache_err)
+    if failure then
+        local ok, cache_err = cache:delete(failure_key)
+        if not ok then
+            ngx.log(ngx.ERR, "failed to delete backend failure key: ", cache_err)
+        end
     end
     _log_unlock(lock)
     return httpc
@@ -181,27 +184,27 @@ end
 local function request_cert(self, domain, timeout)
     local httpc, conn_err = safe_connect(self)
     if conn_err ~= nil then
-        return nil, nil, nil, conn_err
+        return nil, nil, nil, nil, conn_err
     end
 
     -- Get the certificate from backend cert server.
     local cert_json, headers, req_err = _make_request(httpc, { path = "/cert/" .. domain }, timeout, true)
     if not (cert_json and headers) or req_err then
-        return nil, nil, nil, req_err
+        return nil, nil, nil, nil, req_err
     end
 
     -- Convert certificate from PEM to DER format.
     local cert_der, pkey_der, der_err
     cert_der, der_err = ssl.cert_pem_to_der(cert_json["cert"])
     if not cert_der or der_err then
-        return nil, nil, nil, "failed to convert certificate from PEM to DER: " .. (der_err or "nil")
+        return nil, nil, nil, nil, "failed to convert certificate from PEM to DER: " .. (der_err or "nil")
     end
     pkey_der, der_err = ssl.priv_key_pem_to_der(cert_json["pkey"])
     if not pkey_der or der_err then
-        return nil, nil, nil, "failed to convert private key from PEM to DER: " .. (der_err or "nil")
+        return nil, nil, nil, nil, "failed to convert private key from PEM to DER: " .. (der_err or "nil")
     end
 
-    return cert_der, pkey_der, cert_json["ttl"]
+    return cert_der, pkey_der, cert_json["ttl"], cert_json["expire_at"]
 end
 
 local function get_cert(self, domain)
@@ -211,7 +214,7 @@ local function get_cert(self, domain)
     local cert_key = "cert:" .. domain .. ":latest"
     local pkey_key = "pkey:" .. domain .. ":latest"
     local lock_key = "lock:cert:" .. domain
-    local lock_exptime = 120
+    local lock_exptime = 120  -- seconds
 
     local cert, cache_err = cache:get(cert_key)
     if cache_err then
@@ -250,12 +253,15 @@ local function get_cert(self, domain)
     end
 
     -- We are the first, request certificate from backend server.
-    local cert, pkey, ttl, req_err = request_cert(self, domain, lock_exptime - 10)
+    local cert, pkey, ttl, expire_at, req_err = request_cert(self, domain, lock_exptime - 10)
     if (cert and pkey) then
-        -- Cache the newly requested certificate as long living backup.
+        -- Cache the newly requested certificate as long living backup and short-living cache.
+        -- Backup cert (even expired) is preferred than self-signed if backend server is not available.
         local ok, cache_err = _safe_set_cache({
             [ bak_cert_key ] = { cert },
-            [ bak_pkey_key ] = { pkey }
+            [ bak_pkey_key ] = { pkey },
+            [ cert_key ] = { cert, ttl },
+            [ pkey_key ] = { pkey, ttl }
         })
         if not ok then
             ngx.log(ngx.ERR, cache_err)
@@ -274,21 +280,7 @@ local function get_cert(self, domain)
             pkey, cache_err = cache:get(bak_pkey_key)
             if cache_err then
                 ngx.log(ngx.ERR, "failed to get backup pkey cache: ", cache_err)
-            else
-                -- Use short TTL value to pick up backend server as soon as possible.
-                ttl = 60
             end
-        end
-    end
-
-    -- Cache the certificate and private key.
-    if (cert and pkey) then
-        local ok, cache_err = _safe_set_cache({
-            [ cert_key ] = { cert, ttl },
-            [ pkey_key ] = { pkey, ttl }
-        })
-        if not ok then
-            ngx.log(ngx.ERR, cache_err)
         end
     end
 
@@ -328,25 +320,25 @@ end
 local function request_stapling(self, domain, timeout)
     local httpc, err = safe_connect(self)
     if err ~= nil then
-        return nil, err
+        return nil, nil, nil, err
     end
 
     -- Get OCSP stapling from backend cert server.
     local stapling, headers, req_err = _make_request(httpc, { path = "/ocsp/" .. domain }, timeout, false)
     if req_err then
-        return nil, nil, err
+        return nil, nil, nil, err
     end
 
-    -- Parse TTL from response header "Cache-Control", default 10 minutes.
-    local ttl = 600
-    if headers["Cache-Control"] then
-        local m, err = ngx.re.match(headers["Cache-Control"], [[max-age=(\d+)]], 'ijo')
-        if m then
-            ttl = tonumber(m[1])
-        end
+    -- Parse TTL from response header, default 10 minutes if absent for any reason.
+    local ttl, expire_at = 600, 600
+    if headers["X-TTL"] then
+        ttl = tonumber(headers["X-TTL"])
+    end
+    if headers["X-Expire-At"] then
+        expire_at = tonumber(headers["X-Expire-At"])
     end
 
-    return stapling, ttl
+    return stapling, ttl, expire_at
 end
 
 local function get_stapling(self, domain)
@@ -354,7 +346,7 @@ local function get_stapling(self, domain)
     local bak_stapling_key = "stapling:" .. domain
     local stapling_key = "stapling:" .. domain .. ":latest"
     local lock_key = "lock:stapling:" .. domain
-    local lock_exptime = 10
+    local lock_exptime = 10  -- seconds
 
     local stapling, cache_err = cache:get(stapling_key)
     if cache_err then
@@ -381,12 +373,18 @@ local function get_stapling(self, domain)
         return stapling
     end
 
-    -- We are the first, request OCSP stapling from backend server.
-    local stapling, ttl, req_err = request_stapling(self, domain, lock_exptime - 2)
+    -- We are the first, request and cache OCSP stapling from backend server.
+    local stapling, ttl, expire_at, req_err = request_stapling(self, domain, lock_exptime - 2)
     if stapling then
-        local ok, cache_err = _safe_set_cache({
-            [ bak_stapling_key ] = { stapling }
-        })
+        -- Consider time deviation, expire the backup 10 seconds before expiration.
+        local backup_ttl = expire_at - ngx.time() - 10
+        if backup_ttl > 0 then
+            local ok, cache_err = cache:set(bak_stapling_key, stapling, backup_ttl)
+            if not ok then
+                ngx.log(ngx.ERR, cache_err)
+            end
+        end
+        local ok, cache_err = cache:set(stapling_key, stapling, ttl)
         if not ok then
             ngx.log(ngx.ERR, cache_err)
         end
@@ -395,26 +393,6 @@ local function get_stapling(self, domain)
         stapling, cache_err = cache:get(bak_stapling_key)
         if cache_err then
             ngx.log(ngx.ERR, "failed to get backup stapling cache: ", cache_err)
-        else
-            -- No good way to determine the backup's TLL, the ngx.shared.DICT.ttl
-            -- api introduced in v0.10.11 seems buggy for now.
-            -- Make it short lived here as a temporary workaround.
-            --
-            -- ttl, cache_err = cache:ttl(bak_stapling_key)
-            -- if cache_err then
-            --     ngx.log(ngx.ERR, "failed to get backup stapling cache ttl: ", cache_err)
-            -- end
-            ttl = 5
-        end
-    end
-
-    -- Cache the OCSP stapling response.
-    if (stapling and ttl) then
-        local ok, cache_err = _safe_set_cache({
-            [ stapling_key ] = { stapling, ttl }
-        })
-        if not ok then
-            ngx.log(cache_err)
         end
     end
 
@@ -422,7 +400,7 @@ local function get_stapling(self, domain)
     _log_unlock(lock)
 
     if not stapling then
-        return nil, err
+        return nil, req_err
     end
     return stapling
 end
@@ -452,7 +430,7 @@ function _M.ssl_certificate(self)
 
     local cert, pkey, err = get_cert(self, domain)
     if (cert and pkey) then
-        ok, err = set_cert(self, cert, pkey)
+        local ok, err = set_cert(self, cert, pkey)
         if not ok then
             ngx.log(ngx.ERR, domain, ": ", err)
             return
@@ -464,7 +442,7 @@ function _M.ssl_certificate(self)
 
     local stapling, err = get_stapling(self, domain)
     if stapling then
-        ok, err = set_stapling(self, stapling)
+        local ok, err = set_stapling(self, stapling)
         if not ok then
             ngx.log(ngx.ERR, domain, ": ", err)
             return
@@ -477,6 +455,10 @@ end
 
 function _M.challenge_server(self)
     local domain, err = ssl.server_name()
+    if not domain or domain_err then
+        ngx.log(ngx.WARN, "could not determine domain for challenge (SNI not supported?): ", domain_err)
+        ngx.exit(ngx.HTTP_BAD_REQUEST)
+    end
     local allow_domain = self.options["allow_domain"]
     if not allow_domain(domain) then
         ngx.exit(ngx.HTTP_NOT_FOUND)

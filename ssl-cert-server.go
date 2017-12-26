@@ -114,10 +114,16 @@ func (c *Context) CertHandler(w web.ResponseWriter, r *web.Request) {
 	}
 
 	response, err := json.Marshal(struct {
-		Cert string `json:"cert"`
-		PKey string `json:"pkey"`
-		TTL  int    `json:"ttl"` // in seconds
-	}{string(certBuf.Bytes()), string(privKeyBuf.Bytes()), ttlSeconds})
+		Cert     string `json:"cert"`
+		PKey     string `json:"pkey"`
+		ExpireAt int64  `json:"expire_at"` // seconds since epoch
+		TTL      int    `json:"ttl"`       // in seconds
+	}{
+		string(certBuf.Bytes()),
+		string(privKeyBuf.Bytes()),
+		cert.Leaf.NotAfter.Unix(),
+		ttlSeconds,
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(response)
@@ -157,7 +163,8 @@ func (c *Context) OCSPStaplingHandler(w web.ResponseWriter, r *web.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/ocsp-response")
-	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d,public,no-transform,must-revalidate", ttlSeconds))
+	w.Header().Set("X-Expire-At", fmt.Sprintf("%d", nextUpdate.Unix()))
+	w.Header().Set("X-TTL", fmt.Sprintf("%d", ttl))
 	w.Write(response)
 }
 
