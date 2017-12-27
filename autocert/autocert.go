@@ -339,16 +339,16 @@ func (m *Manager) updateOCSPStapling(ctx context.Context, cert *tls.Certificate,
 	return body, resp, nil
 }
 
-var ChallengeNotFount = errors.New("cert-server: challenge not found")
+var ChallengeNotFound = errors.New("cert-server: challenge not found")
 
 func (m *Manager) GetHTTP01ChallengeResponse(token string) (string, error) {
 	if m.client == nil {
-		return "", ChallengeNotFount
+		return "", ChallengeNotFound
 	}
 	m.challengeMu.RLock()
 	defer m.challengeMu.RUnlock()
 	if _, ok := m.challenge[token]; !ok {
-		return "", ChallengeNotFount
+		return "", ChallengeNotFound
 	}
 	return m.client.HTTP01ChallengeResponse(token)
 }

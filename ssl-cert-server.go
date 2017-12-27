@@ -205,7 +205,7 @@ func (c *Context) OCSPStaplingHandler(w web.ResponseWriter, r *web.Request) {
 
 	w.Header().Set("Content-Type", "application/ocsp-response")
 	w.Header().Set("X-Expire-At", fmt.Sprintf("%d", nextUpdate.Unix()))
-	w.Header().Set("X-TTL", fmt.Sprintf("%d", ttl))
+	w.Header().Set("X-TTL", fmt.Sprintf("%d", ttlSeconds))
 	w.Write(response)
 }
 
@@ -213,7 +213,7 @@ func (c *Context) ChallengeHandler(w web.ResponseWriter, r *web.Request) {
 	token := r.PathParams["token"]
 	response, err := manager.GetHTTP01ChallengeResponse(token)
 	if err != nil {
-		if err == autocert.ChallengeNotFount {
+		if err == autocert.ChallengeNotFound {
 			glog.Warningf("token not found: %s", token)
 			w.WriteHeader(http.StatusNotFound)
 		} else {
