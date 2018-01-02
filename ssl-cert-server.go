@@ -255,6 +255,7 @@ func accessLoggerMiddleware(rw web.ResponseWriter, req *web.Request, next web.Ne
 }
 
 func main() {
+	// flags are parsed in the `init()` function
 	defer glog.Flush()
 
 	router := web.New(Context{}).

@@ -81,33 +81,6 @@ local function _safe_set_cache(values)
     return true
 end
 
-local function _make_request(client, opts, timeout, decode_json)
-    timeout = timeout or 5
-    client:set_timeout(timeout * 1000)
-    local res, err = client:request(opts)
-    local body, headers
-    if res then
-        if res.status ~= 200 then
-            err = "bad HTTP status " .. res.status
-        else
-            headers = res.headers
-            body, err = res:read_body()
-            if body and decode_json then
-                local suc
-                suc, body = pcall(cjson.decode, body)
-                if not suc then
-                    err = "invalid json data from backend server"
-                end
-            end
-        end
-    end
-    if err then
-        return nil, nil, err
-    end
-    client:set_keepalive()
-    return body, headers
-end
-
 local function safe_connect(self)
     local lock_key = "lock:backend:connect"
     local failure_key = "backend:failure"
@@ -115,7 +88,7 @@ local function safe_connect(self)
 
     local failure, cache_err = cache:get(failure_key)
     if cache_err then
-        return nil, "failed to get backend failure status from cache"
+        return nil, "failed to get backend failure status: " .. cache_err
     end
     local sleep, previous
     if failure then
@@ -135,7 +108,7 @@ local function safe_connect(self)
     failure, cache_err = cache:get(failure_key)
     if cache_err then
         _log_unlock(lock)
-        return nil, "failed to get backend failure status from cache"
+        return nil, "failed to get backend failure status: " .. cache_err
     end
     if failure then
         local data = cjson.decode(failure)
@@ -164,7 +137,7 @@ local function safe_connect(self)
         ngx.log(ngx.ERR, "backend in unhealthy state, block for ", sleep, " seconds")
         local ok, cache_err = cache:set(failure_key, cjson.encode({ sleep = sleep, previous = ngx.now() }))
         if not ok then
-            ngx.log(ngx.ERR, "failed to set backend failure cache")
+            ngx.log(ngx.ERR, "failed to set backend failure status: ", cache_err)
         end
         _log_unlock(lock)
         return nil, conn_err
@@ -174,21 +147,46 @@ local function safe_connect(self)
     if failure then
         local ok, cache_err = cache:delete(failure_key)
         if not ok then
-            ngx.log(ngx.ERR, "failed to delete backend failure key: ", cache_err)
+            ngx.log(ngx.ERR, "failed to delete backend failure status: ", cache_err)
         end
     end
     _log_unlock(lock)
     return httpc
 end
 
-local function request_cert(self, domain, timeout)
+local function make_request(self, opts, timeout, decode_json)
     local httpc, conn_err = safe_connect(self)
     if conn_err ~= nil then
-        return nil, nil, nil, nil, conn_err
+        return nil, nil, conn_err
     end
+    httpc:set_timeout((timeout or 5) * 1000)
+    local res, req_err = httpc:request(opts)
+    local body, headers
+    if res then
+        if res.status ~= 200 then
+            req_err = "bad HTTP status " .. res.status
+        else
+            headers = res.headers
+            body, req_err = res:read_body()
+            if body and decode_json then
+                local suc
+                suc, body = pcall(cjson.decode, body)
+                if not suc then
+                    req_err = "invalid json data from server"
+                end
+            end
+        end
+    end
+    if req_err then
+        return nil, nil, req_err
+    end
+    httpc:set_keepalive()
+    return body, headers
+end
 
+local function request_cert(self, domain, timeout)
     -- Get the certificate from backend cert server.
-    local cert_json, headers, req_err = _make_request(httpc, { path = "/cert/" .. domain }, timeout, true)
+    local cert_json, headers, req_err = make_request(self, { path = "/cert/" .. domain }, timeout, true)
     if not (cert_json and headers) or req_err then
         return nil, nil, nil, nil, req_err
     end
@@ -318,26 +316,15 @@ local function set_cert(self, cert_der, pkey_der)
 end
 
 local function request_stapling(self, domain, timeout)
-    local httpc, err = safe_connect(self)
-    if err ~= nil then
-        return nil, nil, nil, err
-    end
-
     -- Get OCSP stapling from backend cert server.
-    local stapling, headers, req_err = _make_request(httpc, { path = "/ocsp/" .. domain }, timeout, false)
+    local stapling, headers, req_err = make_request(self, { path = "/ocsp/" .. domain }, timeout, false)
     if req_err then
         return nil, nil, nil, err
     end
 
     -- Parse TTL from response header, default 10 minutes if absent for any reason.
-    local ttl, expire_at = 600, 600
-    if headers["X-TTL"] then
-        ttl = tonumber(headers["X-TTL"])
-    end
-    if headers["X-Expire-At"] then
-        expire_at = tonumber(headers["X-Expire-At"])
-    end
-
+    local ttl = tonumber(headers["X-TTL"] or 600)
+    local expire_at = tonumber(headers["X-Expire-At"] or 600)
     return stapling, ttl, expire_at
 end
 
@@ -381,12 +368,12 @@ local function get_stapling(self, domain)
         if backup_ttl > 0 then
             local ok, cache_err = cache:set(bak_stapling_key, stapling, backup_ttl)
             if not ok then
-                ngx.log(ngx.ERR, cache_err)
+                ngx.log(ngx.ERR, "failed to set backup stapling cache: ", cache_err)
             end
         end
         local ok, cache_err = cache:set(stapling_key, stapling, ttl)
         if not ok then
-            ngx.log(ngx.ERR, cache_err)
+            ngx.log(ngx.ERR, "failed to set stapling cache: ", cache_err)
         end
     else
         -- In case of backend failure, check backup for unexpired response.
@@ -409,7 +396,7 @@ local function set_stapling(self, stapling)
     -- Set the OCSP stapling response.
     local ok, err = ocsp.set_ocsp_status_resp(stapling)
     if not ok then
-        return false, "failed to set OCSP stapling"
+        return false, "failed to set OCSP stapling: " .. err
     end
     return true
 end
@@ -454,22 +441,23 @@ function _M.ssl_certificate(self)
 end
 
 function _M.challenge_server(self)
-    local domain, err = ssl.server_name()
+    local domain, domain_err = ssl.server_name()
     if not domain or domain_err then
         ngx.log(ngx.WARN, "could not determine domain for challenge (SNI not supported?): ", domain_err)
         ngx.exit(ngx.HTTP_BAD_REQUEST)
     end
     local allow_domain = self.options["allow_domain"]
     if not allow_domain(domain) then
+        ngx.log(ngx.NOTICE, domain, ": domain not allowed")
         ngx.exit(ngx.HTTP_NOT_FOUND)
     end
 
     -- Pass challenge request to backend cert server.
     local httpc = resty_http.new()
     httpc:set_timeout(500)
-    local ok, err = httpc:connect(self.options["backend_host"], self.options["backend_port"])
+    local ok, conn_err = httpc:connect(self.options["backend_host"], self.options["backend_port"])
     if not ok then
-        ngx.log(ngx.ERR, "failed to connect backend server: ", err)
+        ngx.log(ngx.ERR, domain, ": failed to connect backend server: ", conn_err)
         ngx.exit(ngx.HTTP_BAD_GATEWAY)
     end
 
