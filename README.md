@@ -144,6 +144,11 @@ http {
 }
 ```
 
+## Dependency
+
+- [OpenResty](https://openresty.org/)
+- [lua-resty-http](https://github.com/pintsized/lua-resty-http)
+
 ## TODO
 
 1. ~~Implement better cache strategy;~~

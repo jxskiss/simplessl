@@ -442,17 +442,22 @@ end
 
 function _M.challenge_server(self)
     local domain, domain_err = ssl.server_name()
-    if not domain or domain_err then
-        ngx.log(ngx.WARN, "could not determine domain for challenge (SNI not supported?): ", domain_err)
-        ngx.exit(ngx.HTTP_BAD_REQUEST)
+    if domain_err then
+        ngx.log(ngx.WARN, "failed to get ssl.server_name (SNI not suspported?): ", domain_err)
     end
-    local allow_domain = self.options["allow_domain"]
-    if not allow_domain(domain) then
+    if not domain or domain == "" then
+        domain = ngx.var.host
+        if not domain or domain == "" then
+            ngx.log(ngx.ERR, "could not determine domain from either ssl.server_name nor ngx.var.host")
+            ngx.exit(ngx.HTTP_BAD_REQUEST)
+        end
+    end
+    if not self.options["allow_domain"](domain) then
         ngx.log(ngx.NOTICE, domain, ": domain not allowed")
         ngx.exit(ngx.HTTP_NOT_FOUND)
     end
 
-    -- Pass challenge request to backend cert server.
+    -- Proxy challenge request to backend cert server.
     local httpc = resty_http.new()
     httpc:set_timeout(500)
     local ok, conn_err = httpc:connect(self.options["backend_host"], self.options["backend_port"])
