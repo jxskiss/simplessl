@@ -74,18 +74,20 @@ func HostWhitelist(hosts ...string) HostPolicy {
 	}
 	return func(_ context.Context, host string) error {
 		if !whitelist[host] {
-			return errors.New("acme/autocert: host not configured")
+			return errors.New("ssl-cert-server/autocert: host not configured")
 		}
 		return nil
 	}
 }
 
-func HostRegexp(pattern *regexp.Regexp) HostPolicy {
+func RegexpWhitelist(patterns ...*regexp.Regexp) HostPolicy {
 	return func(_ context.Context, host string) error {
-		if !pattern.MatchString(host) {
-			return errors.New("ssl-cert-server/autocert: host not matched")
+		for _, p := range patterns {
+			if p.MatchString(host) {
+				return nil
+			}
 		}
-		return nil
+		return errors.New("ssl-cert-server/autocert: host not matched")
 	}
 }
 
@@ -201,18 +203,18 @@ func (m *Manager) GetCertificateByName(name string) (*tls.Certificate, error) {
 // This does not affect cached certs. See HostPolicy field description for more details.
 func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	if m.Prompt == nil {
-		return nil, errors.New("acme/autocert: Manager.Prompt not set")
+		return nil, errors.New("ssl-cert-server/autocert: Manager.Prompt not set")
 	}
 
 	name := hello.ServerName
 	if name == "" {
-		return nil, errors.New("acme/autocert: missing server name")
+		return nil, errors.New("ssl-cert-server/autocert: missing server name")
 	}
 	if !strings.Contains(strings.Trim(name, "."), ".") {
-		return nil, errors.New("acme/autocert: server name component count invalid")
+		return nil, errors.New("ssl-cert-server/autocert: server name component count invalid")
 	}
 	if strings.ContainsAny(name, `/\`) {
-		return nil, errors.New("acme/autocert: server name contains invalid character")
+		return nil, errors.New("ssl-cert-server/autocert: server name contains invalid character")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -229,7 +231,7 @@ func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 			return cert, nil
 		}
 		// TODO: cache error results?
-		return nil, fmt.Errorf("acme/autocert: no token cert for %q", name)
+		return nil, fmt.Errorf("ssl-cert-server/autocert: no token cert for %q", name)
 	}
 
 	// regular domain
@@ -371,7 +373,7 @@ func (m *Manager) cert(ctx context.Context, name string) (*tls.Certificate, erro
 	}
 	signer, ok := cert.PrivateKey.(crypto.Signer)
 	if !ok {
-		return nil, errors.New("acme/autocert: private key cannot sign")
+		return nil, errors.New("ssl-cert-server/autocert: private key cannot sign")
 	}
 	if m.state == nil {
 		m.state = make(map[string]*certState)
@@ -462,7 +464,7 @@ func (m *Manager) cachePut(ctx context.Context, domain string, tlscert *tls.Cert
 			return err
 		}
 	default:
-		return errors.New("acme/autocert: unknown private key type")
+		return errors.New("ssl-cert-server/autocert: unknown private key type")
 	}
 
 	// public
@@ -643,7 +645,7 @@ func (m *Manager) verify(ctx context.Context, domain string) error {
 		}
 	}
 	if chal == nil {
-		return errors.New("acme/autocert: no supported challenge type found")
+		return errors.New("ssl-cert-server/autocert: no supported challenge type found")
 	}
 
 	// http-01 challenge is preferred for cert server
@@ -673,7 +675,7 @@ func (m *Manager) verify(ctx context.Context, domain string) error {
 		case "tls-sin-02":
 			cert, name, err = client.TLSSNI02ChallengeCert(chal.Token)
 		default:
-			err = fmt.Errorf("acme/autocert: unknown challenge type %q", chal.Type)
+			err = fmt.Errorf("ssl-cert-server/autocert: unknown challenge type %q", chal.Type)
 		}
 		if err != nil {
 			return err
@@ -784,7 +786,7 @@ func (m *Manager) accountKey(ctx context.Context) (crypto.Signer, error) {
 
 	priv, _ := pem.Decode(data)
 	if priv == nil || !strings.Contains(priv.Type, "PRIVATE") {
-		return nil, errors.New("acme/autocert: invalid account key found in cache")
+		return nil, errors.New("ssl-cert-server/autocert: invalid account key found in cache")
 	}
 	return parsePrivateKey(priv.Bytes)
 }
@@ -848,10 +850,10 @@ type certState struct {
 // Callers should wrap it in s.RLock() and s.RUnlock().
 func (s *certState) tlscert() (*tls.Certificate, error) {
 	if s.key == nil {
-		return nil, errors.New("acme/autocert: missing signer")
+		return nil, errors.New("ssl-cert-server/autocert: missing signer")
 	}
 	if len(s.cert) == 0 {
-		return nil, errors.New("acme/autocert: missing certificate")
+		return nil, errors.New("ssl-cert-server/autocert: missing certificate")
 	}
 	return &tls.Certificate{
 		PrivateKey:  s.key,
@@ -894,14 +896,14 @@ func parsePrivateKey(der []byte) (crypto.Signer, error) {
 		case *ecdsa.PrivateKey:
 			return key, nil
 		default:
-			return nil, errors.New("acme/autocert: unknown private key type in PKCS#8 wrapping")
+			return nil, errors.New("ssl-cert-server/autocert: unknown private key type in PKCS#8 wrapping")
 		}
 	}
 	if key, err := x509.ParseECPrivateKey(der); err == nil {
 		return key, nil
 	}
 
-	return nil, errors.New("acme/autocert: failed to parse private key")
+	return nil, errors.New("ssl-cert-server/autocert: failed to parse private key")
 }
 
 // validCert parses a cert chain provided as der argument and verifies the leaf, der[0],
@@ -922,16 +924,16 @@ func validCert(domain string, der [][]byte, key crypto.Signer) (leaf *x509.Certi
 	}
 	x509Cert, err := x509.ParseCertificates(pub)
 	if len(x509Cert) == 0 {
-		return nil, errors.New("acme/autocert: no public key found")
+		return nil, errors.New("ssl-cert-server/autocert: no public key found")
 	}
 	// verify the leaf is not expired and matches the domain name
 	leaf = x509Cert[0]
 	now := timeNow()
 	if now.Before(leaf.NotBefore) {
-		return nil, errors.New("acme/autocert: certificate is not valid yet")
+		return nil, errors.New("ssl-cert-server/autocert: certificate is not valid yet")
 	}
 	if now.After(leaf.NotAfter) {
-		return nil, errors.New("acme/autocert: expired certificate")
+		return nil, errors.New("ssl-cert-server/autocert: expired certificate")
 	}
 	if err := leaf.VerifyHostname(domain); err != nil {
 		return nil, err
@@ -941,21 +943,21 @@ func validCert(domain string, der [][]byte, key crypto.Signer) (leaf *x509.Certi
 	case *rsa.PublicKey:
 		prv, ok := key.(*rsa.PrivateKey)
 		if !ok {
-			return nil, errors.New("acme/autocert: private key type does not match public key type")
+			return nil, errors.New("ssl-cert-server/autocert: private key type does not match public key type")
 		}
 		if pub.N.Cmp(prv.N) != 0 {
-			return nil, errors.New("acme/autocert: private key does not match public key")
+			return nil, errors.New("ssl-cert-server/autocert: private key does not match public key")
 		}
 	case *ecdsa.PublicKey:
 		prv, ok := key.(*ecdsa.PrivateKey)
 		if !ok {
-			return nil, errors.New("acme/autocert: private key type does not match public key type")
+			return nil, errors.New("ssl-cert-server/autocert: private key type does not match public key type")
 		}
 		if pub.X.Cmp(prv.X) != 0 || pub.Y.Cmp(prv.Y) != 0 {
-			return nil, errors.New("acme/autocert: private key does not match public key")
+			return nil, errors.New("ssl-cert-server/autocert: private key does not match public key")
 		}
 	default:
-		return nil, errors.New("acme/autocert: unknown public key algorithm")
+		return nil, errors.New("ssl-cert-server/autocert: unknown public key algorithm")
 	}
 	return leaf, nil
 }

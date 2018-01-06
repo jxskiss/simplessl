@@ -37,8 +37,9 @@ func (v *StringArray) String() string {
 }
 
 var (
-	manager         autocert.Manager
-	domainWhitelist StringArray
+	manager     autocert.Manager
+	domainList  StringArray
+	patternList StringArray
 
 	listen   = flag.String("listen", "127.0.0.1:8999", "listen address, be sure DON't open to the world")
 	staging  = flag.Bool("staging", false, "use Let's Encrypt staging directory (default false)")
@@ -46,19 +47,24 @@ var (
 	before   = flag.Int("before", 30, "renew certificates before how many days")
 	email    = flag.String("email", "", "contact email, if Let's Encrypt client's key is already registered, this is not used")
 	forceRSA = flag.Bool("force-rsa", false, "generate certificates with 2048-bit RSA keys (default false)")
-	pattern  = flag.String("pattern", "", "allowed domain regex pattern using POSIX ERE (egrep) syntax, will be ignored when domain parameters supplied")
 )
 
 func init() {
-	flag.Var(&domainWhitelist, "domain", "allowed domain names (may be given multiple times)")
+	flag.Var(&domainList, "domain", "allowed domain names (may be given multiple times)")
+	flag.Var(&patternList, "pattern", "allowed domain regex pattern using POSIX ERE (egrep) syntax, (may be given multiple times, ignored when domain parameters supplied)")
 
 	flag.Parse()
 
 	var hostPolicy autocert.HostPolicy
-	if len(domainWhitelist) > 0 {
-		hostPolicy = autocert.HostWhitelist(domainWhitelist...)
-	} else if *pattern != "" {
-		hostPolicy = autocert.HostRegexp(regexp.MustCompilePOSIX(*pattern))
+	if len(domainList) > 0 {
+		hostPolicy = autocert.HostWhitelist(domainList...)
+	} else if len(patternList) > 0 {
+		patterns := make([]*regexp.Regexp, len(patternList))
+		for i, p := range patternList {
+			r := regexp.MustCompilePOSIX(p)
+			patterns[i] = r
+		}
+		hostPolicy = autocert.RegexpWhitelist(patterns...)
 	} else {
 		// allow any domain by default
 		hostPolicy = func(ctx context.Context, host string) error {

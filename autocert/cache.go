@@ -13,7 +13,7 @@ import (
 )
 
 // ErrCacheMiss is returned when a certificate is not found in cache.
-var ErrCacheMiss = errors.New("acme/autocert: certificate cache miss")
+var ErrCacheMiss = errors.New("ssl-cert-server/autocert: certificate cache miss")
 
 // Cache is used by Manager to store and retrieve previously obtained certificates
 // as opaque data.

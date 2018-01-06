@@ -588,12 +588,12 @@ func TestManagerGetCertificateBogusSNI(t *testing.T) {
 	}{
 		{"foo.com", "cache.Get of foo.com"},
 		{"foo.com.", "cache.Get of foo.com"},
-		{`a\b.com`, "acme/autocert: server name contains invalid character"},
-		{`a/b.com`, "acme/autocert: server name contains invalid character"},
-		{"", "acme/autocert: missing server name"},
-		{"foo", "acme/autocert: server name component count invalid"},
-		{".foo", "acme/autocert: server name component count invalid"},
-		{"foo.", "acme/autocert: server name component count invalid"},
+		{`a\b.com`, "ssl-cert-server/autocert: server name contains invalid character"},
+		{`a/b.com`, "ssl-cert-server/autocert: server name contains invalid character"},
+		{"", "ssl-cert-server/autocert: missing server name"},
+		{"foo", "ssl-cert-server/autocert: server name component count invalid"},
+		{".foo", "ssl-cert-server/autocert: server name component count invalid"},
+		{"foo.", "ssl-cert-server/autocert: server name component count invalid"},
 		{"fo.o", "cache.Get of fo.o"},
 	}
 	for _, tt := range tests {
