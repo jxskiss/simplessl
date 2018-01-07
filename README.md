@@ -12,61 +12,46 @@ I got inspires and stole some code from the awesome project [lua-resty-auto-ssl]
 
 ## Status
 
-Considered BETA, used in our deployment.
+Considered BETA, used in our production deployment.
 
 Users are highly RECOMMENDED to do testing in your environment.
 
-## Install
+## Installation
 
-Download tarball from the [release page](https://github.com/jxskiss/ssl-cert-server/releases), then:
+The lua library is published with [OPM](https://opm.openresty.org/),
+the following command will install the ssl-cert-server library, as well as it's dependency "lua-resty-http".
 
-1. put file `resty/ssl-cert-server.lua` under your OpenResty's lua path;
-2. put file `bin/ssl-cert-server[.exe]` to somewhere and remember the path;
-3. run the cert server, see the following example;
-4. configure your OpenResty to use the cert server for SSL certificates, see the following configuration example.
+`opm get jxskiss/ssl-cert-server`
 
-Cert server example (for any sub-domain of example.com):
+If you do not have opm, you can install the lua libraries manually, take OpenResty
+installed under "/usr/local/openresty" as example (you may need to use sudo to grant proper permission):
 
-`/path/to/ssl-cert-server --listen=127.0.0.1:8999 --logtostderr --email=admin@example.com --pattern=".*\\.example\\.com$"`
-
-All available options for `ssl-cert-server`:
-
-```text
-Usage of ssl-cert-server:
-  -alsologtostderr
-        log to standard error as well as files
-  -before int
-        renew certificates before how many days (default 30)
-  -cache-dir string
-        which directory to cache certificates (default "./secret-dir")
-  -domain value
-        allowed domain names (may be given multiple times)
-  -email string
-        contact email, if Let's Encrypt client's key is already registered, this is not used
-  -force-rsa
-        generate certificates with 2048-bit RSA keys (default false)
-  -listen string
-        listen address, be sure DON't open to the world (default "127.0.0.1:8999")
-  -log_backtrace_at value
-        when logging hits line file:N, emit a stack trace
-  -log_dir string
-        If non-empty, write log files in this directory
-  -logtostderr
-        log to standard error instead of files
-  -pattern value
-        allowed domain regex pattern using POSIX ERE (egrep) syntax, (may be given multiple times,
-        will be ignored when domain parameters supplied)
-  -shortlog
-        use simple short log header (default true)
-  -staging
-        use Let's Encrypt staging directory (default false)
-  -stderrthreshold value
-        logs at or above this threshold go to stderr
-  -v value
-        log level for V logs
-  -vmodule value
-        comma-separated list of pattern=N settings for file-filtered logging
+```bash
+mkdir -p /usr/local/openresty/site/lualib/resty
+cd /usr/local/openresty/site/lualib/resty
+wget https://raw.githubusercontent.com/pintsized/lua-resty-http/master/lib/resty/http.lua
+wget https://raw.githubusercontent.com/pintsized/lua-resty-http/master/lib/resty/http_headers.lua
+wget https://raw.githubusercontent.com/jxskiss/ssl-cert-server/master/lib/resty/ssl-cert-server.lua
 ```
+
+Then download the cert server service binary file, either build by yourself:
+
+`go get github.com/jxskiss/ssl-cert-server`
+
+Or, download prebuilt binaries from the [release page](https://github.com/jxskiss/ssl-cert-server/releases).
+
+Run your cert server (eg: for any sub-domain of example.com):
+
+```bash
+/path/to/ssl-cert-server --listen=127.0.0.1:8999 \
+    --email=admin@example.com \
+    --pattern=".*\\.example\\.com$" \
+    --logtostderr
+```
+
+For all available options for `ssl-cert-server` service, please read through.
+
+Now you can configure your OpenResty to use the cert server for SSL certificates, see the following configuration example.
 
 ## Configuration Example
 
@@ -142,6 +127,47 @@ http {
     }
 
 }
+```
+
+## Available options for cert server
+
+```text
+Usage of ssl-cert-server:
+  -listen string
+        listen address, be sure DON't open to the world (default "127.0.0.1:8999")
+  -email string
+        contact email, if Let's Encrypt client's key is already registered, this is not used
+  -staging
+        use Let's Encrypt staging directory (default false)
+  -force-rsa
+        generate certificates with 2048-bit RSA keys (default false)
+  -before int
+        renew certificates before how many days (default 30)
+  -cache-dir string
+        which directory to cache certificates (default "./secret-dir")
+  -domain value
+        allowed domain names (may be given multiple times)
+  -pattern value
+        allowed domain regex pattern using POSIX ERE (egrep) syntax, (may be given multiple times,
+        will be ignored when domain parameters supplied)
+  -log_backtrace_at value
+        when logging hits line file:N, emit a stack trace
+  -log_dir string
+        If non-empty, write log files in this directory
+  -logtostderr
+        log to standard error instead of files
+  -alsologtostderr
+        log to standard error as well as files
+  -shortlog
+        use simple short log header (default true)
+  -stderrthreshold value
+        logs at or above this threshold go to stderr
+  -v value
+        log level for V logs
+  -vmodule value
+        comma-separated list of pattern=N settings for file-filtered logging
+  -version
+        print version string and quit
 ```
 
 ## Dependency

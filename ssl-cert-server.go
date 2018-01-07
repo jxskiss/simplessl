@@ -23,6 +23,8 @@ import (
 	"golang.org/x/crypto/acme"
 )
 
+const VERSION = "0.1.1"
+
 type StringArray []string
 
 // Implement flag.Value interface.
@@ -41,12 +43,13 @@ var (
 	domainList  StringArray
 	patternList StringArray
 
-	listen   = flag.String("listen", "127.0.0.1:8999", "listen address, be sure DON't open to the world")
-	staging  = flag.Bool("staging", false, "use Let's Encrypt staging directory (default false)")
-	cacheDir = flag.String("cache-dir", "./secret-dir", "which directory to cache certificates")
-	before   = flag.Int("before", 30, "renew certificates before how many days")
-	email    = flag.String("email", "", "contact email, if Let's Encrypt client's key is already registered, this is not used")
-	forceRSA = flag.Bool("force-rsa", false, "generate certificates with 2048-bit RSA keys (default false)")
+	showVersion = flag.Bool("version", false, "print version string and quit")
+	listen      = flag.String("listen", "127.0.0.1:8999", "listen address, be sure DON't open to the world")
+	staging     = flag.Bool("staging", false, "use Let's Encrypt staging directory (default false)")
+	cacheDir    = flag.String("cache-dir", "./secret-dir", "which directory to cache certificates")
+	before      = flag.Int("before", 30, "renew certificates before how many days")
+	email       = flag.String("email", "", "contact email, if Let's Encrypt client's key is already registered, this is not used")
+	forceRSA    = flag.Bool("force-rsa", false, "generate certificates with 2048-bit RSA keys (default false)")
 )
 
 func init() {
@@ -263,6 +266,11 @@ func accessLoggerMiddleware(rw web.ResponseWriter, req *web.Request, next web.Ne
 func main() {
 	// flags are parsed in the `init()` function
 	defer glog.Flush()
+
+	if *showVersion {
+		fmt.Printf("ssl-cert-server v%s\n", VERSION)
+		return
+	}
 
 	router := web.New(Context{}).
 		Middleware(accessLoggerMiddleware).
