@@ -25,6 +25,7 @@ import (
 	"io"
 	"io/ioutil"
 	mathrand "math/rand"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -48,9 +49,29 @@ var createCertRetryAfter = time.Minute
 // pseudoRand is safe for concurrent use.
 var pseudoRand *lockedMathRand
 
+// httpClient is used to do http request instead of the default http.DefaultClient.
+// The OCSP server of Let's Encrypt certificates seems working improperly, gives
+// `Unsolicited response received on idle HTTP channel starting with "HTTP/1.0 408 Request Time-out"`
+// errors constantly after the service has been running for a long time.
+// Using custom httpClient which disables Keep-Alive should fix this issue.
+var httpClient *http.Client
+
 func init() {
 	src := mathrand.NewSource(timeNow().UnixNano())
 	pseudoRand = &lockedMathRand{rnd: mathrand.New(src)}
+	httpClient = &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   5 * time.Second,
+				DualStack: true,
+			}).DialContext,
+			Proxy:                 http.ProxyFromEnvironment,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			DisableKeepAlives:     true,
+		},
+	}
 }
 
 // AcceptTOS is a Manager.Prompt function that always returns true to
@@ -322,7 +343,7 @@ func (m *Manager) updateOCSPStapling(ctx context.Context, cert *tls.Certificate,
 	if err != nil {
 		return nil, nil, err
 	}
-	httpResp, err := http.Post(
+	httpResp, err := httpClient.Post(
 		cert.Leaf.OCSPServer[0],
 		"application/ocsp-request",
 		bytes.NewBuffer(ocspReq))

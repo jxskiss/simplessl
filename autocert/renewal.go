@@ -7,6 +7,7 @@ package autocert
 import (
 	"context"
 	"crypto"
+	"log"
 	"sync"
 	"time"
 )
@@ -30,6 +31,7 @@ type domainRenewal struct {
 //
 // If the timer is already started, calling start is a noop.
 func (dr *domainRenewal) start(exp time.Time) {
+	log.Printf("starting certificate renewer for domain: %v\n", dr.domain)
 	dr.timerMu.Lock()
 	defer dr.timerMu.Unlock()
 	if dr.timer != nil {
@@ -41,6 +43,7 @@ func (dr *domainRenewal) start(exp time.Time) {
 // stop stops the cert renewal timer.
 // If the timer is already stopped, calling stop is a noop.
 func (dr *domainRenewal) stop() {
+	log.Printf("stoping certificate renewer for domain: %v\n", dr.domain)
 	dr.timerMu.Lock()
 	defer dr.timerMu.Unlock()
 	if dr.timer == nil {
@@ -53,6 +56,7 @@ func (dr *domainRenewal) stop() {
 // renew is called periodically by a timer.
 // The first renew call is kicked off by dr.start.
 func (dr *domainRenewal) renew() {
+	log.Printf("renewing certificate for domain: %v\n", dr.domain)
 	dr.timerMu.Lock()
 	defer dr.timerMu.Unlock()
 	if dr.timer == nil {
@@ -132,6 +136,7 @@ type ocspUpdater struct {
 }
 
 func (ou *ocspUpdater) start(next time.Time) {
+	log.Printf("starting OCSP stapling updater for domain: %v\n", ou.domain)
 	ou.timerMu.Lock()
 	defer ou.timerMu.Unlock()
 	if ou.timer != nil {
@@ -141,6 +146,7 @@ func (ou *ocspUpdater) start(next time.Time) {
 }
 
 func (ou *ocspUpdater) stop() {
+	log.Printf("stoping OCSP stapling updater for domain: %v\v", ou.domain)
 	ou.timerMu.Lock()
 	defer ou.timerMu.Unlock()
 	if ou.timer == nil {
@@ -151,6 +157,7 @@ func (ou *ocspUpdater) stop() {
 }
 
 func (ou *ocspUpdater) update() {
+	log.Printf("updating OCSP stapling for domain: %v\n", ou.domain)
 	ou.timerMu.Lock()
 	defer ou.timerMu.Unlock()
 	if ou.timer == nil {
