@@ -95,11 +95,8 @@ type Manager struct {
 	m        *autocert.Manager
 	ForceRSA bool
 
-	ocspStateMu sync.Mutex
+	ocspStateMu sync.RWMutex
 	ocspState   map[string]*ocspState
-
-	ocspRenewalMu sync.RWMutex
-	ocspRenewal   map[string]*ocspRenewal
 }
 
 func (m *Manager) GetCertificateByName(name string) (*tls.Certificate, error) {
@@ -110,8 +107,7 @@ func (m *Manager) GetCertificateByName(name string) (*tls.Certificate, error) {
 			tls.ECDSAWithP384AndSHA384,
 			tls.ECDSAWithP521AndSHA512,
 		)
-		helloInfo.SupportedCurves = append(helloInfo.SupportedCurves,
-			tls.CurveP256, tls.CurveP384, tls.CurveP521)
+		helloInfo.SupportedCurves = append(helloInfo.SupportedCurves, tls.CurveP256, tls.CurveP384, tls.CurveP521)
 		helloInfo.CipherSuites = append(helloInfo.CipherSuites,
 			tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
@@ -126,7 +122,7 @@ func (m *Manager) GetCertificateByName(name string) (*tls.Certificate, error) {
 }
 
 func (m *Manager) GetOCSPStapling(domain string) ([]byte, time.Time, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	keyName := domain
@@ -134,67 +130,57 @@ func (m *Manager) GetOCSPStapling(domain string) ([]byte, time.Time, error) {
 		keyName += "+rsa"
 	}
 	m.ocspStateMu.Lock()
-	if s, ok := m.ocspState[keyName]; ok {
-		m.ocspStateMu.Unlock()
-		s.RLock()
-		defer s.RUnlock()
-		return s.ocspDER, s.nextUpdate, nil
-	}
 	defer m.ocspStateMu.Unlock()
-
-	// only request OCSP stapling for cached cert
-	// don't request new certificate here
-	_, err := m.m.Cache.Get(ctx, keyName)
-	if err != nil {
-		return nil, time.Time{}, err
+	state, exists := m.ocspState[keyName]
+	// only request OCSP stapling for cached certificate
+	if !exists {
+		if _, err := m.m.Cache.Get(ctx, keyName); err != nil {
+			return nil, time.Time{}, err
+		}
 	}
 	cert, err := m.GetCertificateByName(domain)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
-	der, response, err := m.updateOCSPStapling(ctx, cert, nil)
+	if exists {
+		//if state.cert.Leaf == cert.Leaf {}
+		if bytes.Equal(state.cert.Certificate[0], cert.Certificate[0]) {
+			state.RLock()
+			defer state.RUnlock()
+			return state.ocspDER, state.nextUpdate, nil
+		} else {
+			state.renewal.stop()
+			delete(m.ocspState, keyName)
+		}
+	}
+
+	issuer, err := x509.ParseCertificate(cert.Certificate[len(cert.Certificate)-1])
 	if err != nil {
 		return nil, time.Time{}, err
 	}
-
-	issuer, _ := x509.ParseCertificate(cert.Certificate[len(cert.Certificate)-1])
-	s := &ocspState{
-		leaf:       cert,
+	der, response, err := m.updateOCSPStapling(ctx, cert, issuer)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	state = &ocspState{
+		cert:       cert,
 		issuer:     issuer,
 		ocspDER:    der,
 		nextUpdate: response.NextUpdate,
+		renewal:    &ocspRenewal{m: m, domain: domain, keyName: keyName},
 	}
 	if m.ocspState == nil {
 		m.ocspState = make(map[string]*ocspState)
 	}
-	m.ocspState[keyName] = s
+	m.ocspState[keyName] = state
 
-	// start OCSP Stapling updater timer loop
-	go func() {
-		m.ocspRenewalMu.Lock()
-		defer m.ocspRenewalMu.Unlock()
-		if m.ocspRenewal[keyName] != nil {
-			// another goroutine is already on it
-			return
-		}
-		if m.ocspRenewal == nil {
-			m.ocspRenewal = make(map[string]*ocspRenewal)
-		}
-		or := &ocspRenewal{m: m, keyName: keyName}
-		m.ocspRenewal[keyName] = or
-		or.start(s.nextUpdate)
-	}()
+	// start OCSP stapling renewal timer loop
+	go state.renewal.start(state.nextUpdate)
 
-	return s.ocspDER, s.nextUpdate, nil
+	return state.ocspDER, state.nextUpdate, nil
 }
 
 func (m *Manager) updateOCSPStapling(ctx context.Context, cert *tls.Certificate, issuer *x509.Certificate) (der []byte, resp *ocsp.Response, err error) {
-	if issuer == nil {
-		issuer, err = x509.ParseCertificate(cert.Certificate[len(cert.Certificate)-1])
-		if err != nil {
-			return nil, nil, err
-		}
-	}
 	ocspReq, err := ocsp.CreateRequest(cert.Leaf, issuer, nil)
 	if err != nil {
 		return nil, nil, err
@@ -215,28 +201,18 @@ func (m *Manager) updateOCSPStapling(ctx context.Context, cert *tls.Certificate,
 	return body, resp, nil
 }
 
-type lockedMathRand struct {
-	sync.Mutex
-	rnd *mathrand.Rand
-}
-
-func (r *lockedMathRand) int63n(max int64) int64 {
-	r.Lock()
-	n := r.rnd.Int63n(max)
-	r.Unlock()
-	return n
-}
-
 type ocspState struct {
 	sync.RWMutex
-	leaf       *tls.Certificate
+	cert       *tls.Certificate
 	issuer     *x509.Certificate
 	ocspDER    []byte
 	nextUpdate time.Time
+	renewal    *ocspRenewal
 }
 
 type ocspRenewal struct {
 	m       *Manager
+	domain  string
 	keyName string
 
 	timerMu sync.Mutex
@@ -244,7 +220,7 @@ type ocspRenewal struct {
 }
 
 func (or *ocspRenewal) start(next time.Time) {
-	log.Printf("starting OCSP stapling updater for key: %v\n", or.keyName)
+	log.Println("starting OCSP stapling renewal: key_name=", or.keyName, "next_update=", next.Format(time.RFC3339Nano))
 	or.timerMu.Lock()
 	defer or.timerMu.Unlock()
 	if or.timer != nil {
@@ -254,7 +230,7 @@ func (or *ocspRenewal) start(next time.Time) {
 }
 
 func (or *ocspRenewal) stop() {
-	log.Printf("stoping OCSP stapling updater for key: %v\n", or.keyName)
+	log.Println("stoping OCSP stapling renewal: key_name=", or.keyName)
 	or.timerMu.Lock()
 	defer or.timerMu.Unlock()
 	if or.timer == nil {
@@ -265,28 +241,33 @@ func (or *ocspRenewal) stop() {
 }
 
 func (or *ocspRenewal) update() {
-	log.Printf("updating OCSP stapling for key: %v\n", or.keyName)
 	or.timerMu.Lock()
 	defer or.timerMu.Unlock()
-	if or.timer == nil {
+	if or.timer == nil { // has been stopped
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	var next time.Duration
-	// state will not be nil
-	state, _ := or.m.ocspState[or.keyName]
+	or.m.ocspStateMu.RLock()
+	state, ok := or.m.ocspState[or.keyName]
+	or.m.ocspStateMu.RUnlock()
+	if !ok || state.renewal != or {
+		// state has been removed / replaced, stop the old renewal and trigger
+		// caching OCSP stapling for the new certificate
+		or.timer = nil
+		go or.m.GetOCSPStapling(or.domain)
+		return
+	}
 
-	der, response, err := or.m.updateOCSPStapling(ctx, state.leaf, state.issuer)
+	var next time.Duration
+	der, response, err := or.m.updateOCSPStapling(ctx, state.cert, state.issuer)
 	if err != nil {
-		// failed
-		log.Println("updateOCSPStapling failed: keyName=", or.keyName, "err=", err)
+		log.Println("update OCSP stapling failed: key_name=", or.keyName, "err=", err)
 		next = renewJitter / 2
 		next += time.Duration(pseudoRand.int63n(int64(next)))
 	} else {
-		log.Println("updateOCSPStapling success: keyName=", or.keyName, "next_update=", response.NextUpdate.Format(time.RFC3339Nano))
-		// success
+		log.Println("update OCSP stapling success: key_name=", or.keyName, "next_update=", response.NextUpdate.Format(time.RFC3339Nano))
 		state.Lock()
 		defer state.Unlock()
 		state.ocspDER = der
@@ -294,14 +275,11 @@ func (or *ocspRenewal) update() {
 		next = or.next(response.NextUpdate)
 	}
 
-	time.Sleep(10 * time.Second)
-
 	or.timer = time.AfterFunc(next, or.update)
 	testOCSPDidUpdateLoop(next, err)
 }
 
 func (or *ocspRenewal) next(expiry time.Time) time.Duration {
-	log.Println("*ocspRenewal.next: key=", or.keyName, "expiry=", expiry.Format(time.RFC3339Nano))
 	var d time.Duration
 	if expiry.Sub(timeNow()) > 48*time.Hour {
 		d = expiry.Sub(timeNow()) - 48*time.Hour
@@ -311,9 +289,22 @@ func (or *ocspRenewal) next(expiry time.Time) time.Duration {
 	d -= time.Duration(n)
 	if d < 0 {
 		// force sleep a while before next update
-		return time.Minute
+		n := pseudoRand.int63n(int64(time.Minute))
+		d = time.Minute + time.Duration(n)
 	}
 	return d
+}
+
+type lockedMathRand struct {
+	sync.Mutex
+	rnd *mathrand.Rand
+}
+
+func (r *lockedMathRand) int63n(max int64) int64 {
+	r.Lock()
+	n := r.rnd.Int63n(max)
+	r.Unlock()
+	return n
 }
 
 var testOCSPDidUpdateLoop = func(next time.Duration, err error) {}

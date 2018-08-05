@@ -13,6 +13,7 @@ import (
 	"log"
 	mathrand "math/rand"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -96,13 +97,13 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/cert/", manager.HandleCertificate)
-	mux.HandleFunc("/ocsp/", manager.HandlerOCSPStapling)
-	mux.Handle("/.well-known/acme-challenge/", manager.m.HTTPHandler(nil))
+	mux.Handle("/cert/", loggingMiddleware(http.HandlerFunc(manager.HandleCertificate)))
+	mux.Handle("/ocsp/", loggingMiddleware(http.HandlerFunc(manager.HandleOCSPStapling)))
+	mux.Handle("/.well-known/acme-challenge/", loggingMiddleware(manager.m.HTTPHandler(nil)))
 
 	log.Printf("listening on http://%v\n", *listen)
 	err := http.ListenAndServe(*listen, mux)
-	log.Println("server stopped:", err)
+	log.Println("server stopped: err=", err)
 }
 
 func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
@@ -115,11 +116,11 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	cert, err := m.GetCertificateByName(domain)
 	if err != nil {
 		if err == ErrHostNotPermitted {
-			log.Println("domain name not permitted:", domain)
+			log.Println("domain name not permitted: domain=", domain)
 			w.WriteHeader(http.StatusForbidden)
 			w.Write([]byte("Host name not permitted."))
 		} else {
-			log.Println("failed get certificate:", domain)
+			log.Println("failed get certificate: domain=", domain, "err=", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte("Error getting certificate."))
 		}
@@ -132,7 +133,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 		ttlSeconds int
 	)
 	if ttl <= 0 {
-		log.Println("got expired certificate:", domain)
+		log.Println("got expired certificate: domain=", domain)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
@@ -154,7 +155,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	for _, b := range cert.Certificate {
 		pb := &pem.Block{Type: "CERTIFICATE", Bytes: b}
 		if err := pem.Encode(&certBuf, pb); err != nil {
-			log.Println("failed encode certificate:", err)
+			log.Println("failed encode certificate: domain=", domain, "err=", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -162,18 +163,18 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	switch key := cert.PrivateKey.(type) {
 	case *rsa.PrivateKey:
 		if err := EncodeRSAKey(&privKeyBuf, key); err != nil {
-			log.Println("failed encode rsa key:", err)
+			log.Println("failed encode rsa key: domain=", domain, "err=", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 	case *ecdsa.PrivateKey:
 		if err := EncodeECDSAKey(&privKeyBuf, key); err != nil {
-			log.Println("failed encode ecdsa key:", err)
+			log.Println("failed encode ecdsa key: domain=", domain, "err=", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 	default:
-		log.Printf("unknown private key type: %T\n", key)
+		log.Printf("unknown private key type: domain= %v type= %T\n", domain, key)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -194,7 +195,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	w.Write(response)
 }
 
-func (m *Manager) HandlerOCSPStapling(w http.ResponseWriter, r *http.Request) {
+func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/ocsp/")
 	if err := checkDomainName(domain); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -206,7 +207,7 @@ func (m *Manager) HandlerOCSPStapling(w http.ResponseWriter, r *http.Request) {
 		if err == autocert.ErrCacheMiss {
 			w.WriteHeader(http.StatusNotFound)
 		} else {
-			log.Println("failed get OCSP stapling:", err)
+			log.Println("failed get OCSP stapling: domain=", domain, "err=", err)
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 		return
@@ -217,7 +218,7 @@ func (m *Manager) HandlerOCSPStapling(w http.ResponseWriter, r *http.Request) {
 		ttlSeconds int
 	)
 	if ttl <= 0 {
-		log.Println("got expired OCSP stapling:", domain)
+		log.Println("got expired OCSP stapling: domain=", domain)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
@@ -249,4 +250,30 @@ func checkDomainName(name string) error {
 		return errors.New("domain name contains invalid character")
 	}
 	return nil
+}
+
+var accessLogger = log.New(os.Stdout, "", 0)
+
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (lrw *loggingResponseWriter) WriteHeader(code int) {
+	lrw.statusCode = code
+	lrw.ResponseWriter.WriteHeader(code)
+}
+
+func loggingMiddleware(hdlr http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		lrw := &loggingResponseWriter{w, http.StatusOK}
+		defer func(start time.Time) {
+			// Ammdd hhmmss Addr] Status Method URI Duration
+			const LogFormat = "[%s %s] %d %s %s %s\n"
+			now := time.Now().UTC()
+			logTime := now.Format("20060102 15:04:05")
+			accessLogger.Printf(LogFormat, logTime, req.RemoteAddr, lrw.statusCode, req.Method, req.RequestURI, now.Sub(start))
+		}(time.Now())
+		hdlr.ServeHTTP(lrw, req)
+	})
 }
