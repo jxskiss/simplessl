@@ -11,11 +11,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	mathrand "math/rand"
 	"net/http"
 	"os"
+	"os/signal"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/acme"
@@ -100,15 +101,26 @@ func main() {
 	mux.Handle("/cert/", loggingMiddleware(http.HandlerFunc(manager.HandleCertificate)))
 	mux.Handle("/ocsp/", loggingMiddleware(http.HandlerFunc(manager.HandleOCSPStapling)))
 	mux.Handle("/.well-known/acme-challenge/", loggingMiddleware(manager.m.HTTPHandler(nil)))
+	server := http.Server{Addr: *listen, Handler: mux}
+	go func() {
+		log.Printf("start server listening on http://%v\n", *listen)
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+			log.Fatalln("server stopped: err=", err)
+		}
+	}()
 
-	log.Printf("listening on http://%v\n", *listen)
-	err := http.ListenAndServe(*listen, mux)
-	log.Println("server stopped: err=", err)
+	// graceful shutdown
+	stop := make(chan os.Signal)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = server.Shutdown(ctx)
+	log.Println("server shutdown gracefully")
 }
 
 func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/cert/")
-	if err := checkDomainName(domain); err != nil {
+	if err := m.checkDomainName(domain); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("Invalid domain name."))
 		return
@@ -127,26 +139,14 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var (
-		now        = time.Now()
-		ttl        = cert.Leaf.NotAfter.Sub(now)
-		ttlSeconds int
-	)
+	var ttl = time.Until(cert.Leaf.NotAfter)
 	if ttl <= 0 {
 		log.Println("got expired certificate: domain=", domain)
 		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("No valid certificate available."))
 		return
 	}
-	if ttl > 3600*time.Second {
-		ttlSeconds = 3600
-	} else {
-		ttlSeconds = int(ttl.Seconds() * 0.8)
-	}
-	// add a little randomness to the TTL
-	n := mathrand.Intn(100)
-	if n < ttlSeconds {
-		ttlSeconds -= n
-	}
+	ttlSeconds := m.limitTTL(ttl)
 
 	var (
 		certBuf    bytes.Buffer
@@ -154,32 +154,29 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	)
 	for _, b := range cert.Certificate {
 		pb := &pem.Block{Type: "CERTIFICATE", Bytes: b}
-		if err := pem.Encode(&certBuf, pb); err != nil {
+		if err = pem.Encode(&certBuf, pb); err != nil {
 			log.Println("failed encode certificate: domain=", domain, "err=", err)
 			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Error encode certificate."))
 			return
 		}
 	}
 	switch key := cert.PrivateKey.(type) {
 	case *rsa.PrivateKey:
-		if err := EncodeRSAKey(&privKeyBuf, key); err != nil {
-			log.Println("failed encode rsa key: domain=", domain, "err=", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
+		err = EncodeRSAKey(&privKeyBuf, key)
 	case *ecdsa.PrivateKey:
-		if err := EncodeECDSAKey(&privKeyBuf, key); err != nil {
-			log.Println("failed encode ecdsa key: domain=", domain, "err=", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
+		err = EncodeECDSAKey(&privKeyBuf, key)
 	default:
-		log.Printf("unknown private key type: domain= %v type= %T\n", domain, key)
+		err = fmt.Errorf("unknown private key type")
+	}
+	if err != nil {
+		log.Printf("failed encode private key: domain= %v type= %T err= %v\n", domain, cert.PrivateKey, err)
 		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("Error encode certificate key."))
 		return
 	}
 
-	response, err := json.Marshal(struct {
+	response, _ := json.Marshal(struct {
 		Cert     string `json:"cert"`
 		PKey     string `json:"pkey"`
 		ExpireAt int64  `json:"expire_at"` // seconds since epoch
@@ -189,7 +186,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 		string(privKeyBuf.Bytes()),
 		cert.Leaf.NotAfter.Unix(),
 		ttlSeconds,
-	})
+	}) // error ignored, shall not fail
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(response)
@@ -197,7 +194,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 
 func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/ocsp/")
-	if err := checkDomainName(domain); err != nil {
+	if err := m.checkDomainName(domain); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("Invalid domain name."))
 		return
@@ -206,32 +203,23 @@ func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err == autocert.ErrCacheMiss {
 			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("Domain certificate not cached."))
 		} else {
 			log.Println("failed get OCSP stapling: domain=", domain, "err=", err)
 			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Error get OCSP stapling."))
 		}
 		return
 	}
-	var (
-		now        = time.Now()
-		ttl        = nextUpdate.Sub(now)
-		ttlSeconds int
-	)
+
+	var ttl = time.Until(nextUpdate)
 	if ttl <= 0 {
 		log.Println("got expired OCSP stapling: domain=", domain)
 		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("No valid OCSP stapling available."))
 		return
 	}
-	if ttl > 3600*time.Second {
-		ttlSeconds = 3600
-	} else {
-		ttlSeconds = int(ttl.Seconds() * 0.8)
-	}
-	// add a little randomness to the TTL
-	n := mathrand.Intn(100)
-	if n < ttlSeconds {
-		ttlSeconds -= n
-	}
+	ttlSeconds := m.limitTTL(ttl)
 
 	w.Header().Set("Content-Type", "application/ocsp-response")
 	w.Header().Set("X-Expire-At", fmt.Sprintf("%d", nextUpdate.Unix()))
@@ -239,7 +227,27 @@ func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 	w.Write(response)
 }
 
-func checkDomainName(name string) error {
+func (m Manager) limitTTL(ttl time.Duration) int {
+	if ttl <= 0 {
+		return 0
+	}
+	var ttlSeconds int64 = 3600
+	if ttl < time.Hour {
+		ttlSeconds = int64(ttl.Seconds() * 0.8)
+	}
+	// add a little randomness to the TTL
+	var jitter int64 = 60
+	if ttlSeconds <= 2*jitter {
+		jitter = ttlSeconds / 2
+	}
+	n := pseudoRand.int63n(jitter)
+	if n < ttlSeconds {
+		ttlSeconds -= n
+	}
+	return int(ttlSeconds)
+}
+
+func (m Manager) checkDomainName(name string) error {
 	if name == "" {
 		return errors.New("missing domain name")
 	}
@@ -268,7 +276,7 @@ func loggingMiddleware(hdlr http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		lrw := &loggingResponseWriter{w, http.StatusOK}
 		defer func(start time.Time) {
-			// Ammdd hhmmss Addr] Status Method URI Duration
+			// [yyyymmdd hhmmss Addr] Status Method URI Duration
 			const LogFormat = "[%s %s] %d %s %s %s\n"
 			now := time.Now().UTC()
 			logTime := now.Format("20060102 15:04:05")

@@ -99,8 +99,15 @@ type Manager struct {
 	ocspState   map[string]*ocspState
 }
 
-func (m *Manager) GetCertificateByName(name string) (*tls.Certificate, error) {
-	helloInfo := &tls.ClientHelloInfo{ServerName: name}
+func (m *Manager) KeyName(domain string) string {
+	if !m.ForceRSA {
+		return domain
+	}
+	return domain + "+rsa"
+}
+
+func (m *Manager) helloInfo(domain string) *tls.ClientHelloInfo {
+	helloInfo := &tls.ClientHelloInfo{ServerName: domain}
 	if !m.ForceRSA {
 		helloInfo.SignatureSchemes = append(helloInfo.SignatureSchemes,
 			tls.ECDSAWithP256AndSHA256,
@@ -118,49 +125,76 @@ func (m *Manager) GetCertificateByName(name string) (*tls.Certificate, error) {
 			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
 		)
 	}
-	return m.m.GetCertificate(helloInfo)
+	return helloInfo
+}
+
+func (m *Manager) GetCertificateByName(name string) (*tls.Certificate, error) {
+	helloInfo := m.helloInfo(name)
+	cert, err := m.m.GetCertificate(helloInfo)
+	if err != nil {
+		return nil, err
+	}
+	// trigger caching OCSP stapling in case of new certificate
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		m.ocspStateMu.Lock()
+		defer m.ocspStateMu.Unlock()
+		keyName := m.KeyName(name)
+		_, err := m.loadOCSPState(ctx, name, cert)
+		if err != nil {
+			log.Println("trigger cache OCSP stapling failed: key_name=", keyName, "err=", err)
+		}
+	}()
+	return cert, nil
 }
 
 func (m *Manager) GetOCSPStapling(domain string) ([]byte, time.Time, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	keyName := domain
-	if m.ForceRSA {
-		keyName += "+rsa"
-	}
 	m.ocspStateMu.Lock()
 	defer m.ocspStateMu.Unlock()
-	state, exists := m.ocspState[keyName]
-	// only request OCSP stapling for cached certificate
-	if !exists {
+	keyName := m.KeyName(domain)
+	if _, ok := m.ocspState[keyName]; !ok {
 		if _, err := m.m.Cache.Get(ctx, keyName); err != nil {
 			return nil, time.Time{}, err
 		}
 	}
-	cert, err := m.GetCertificateByName(domain)
+	cert, err := m.m.GetCertificate(m.helloInfo(domain))
 	if err != nil {
 		return nil, time.Time{}, err
 	}
-	if exists {
-		//if state.cert.Leaf == cert.Leaf {}
+	state, err := m.loadOCSPState(ctx, domain, cert)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return state.ocspDER, state.nextUpdate, nil
+}
+
+// loadOCSPState load OCSP stapling state for the given domain name and certificate
+// from cache if available, or request new OCSP stapling from the certificate's
+// OCSP server and cache the ocspState in Manager, caller must hold the lock ocspStateMu.
+func (m *Manager) loadOCSPState(ctx context.Context, domain string, cert *tls.Certificate) (*ocspState, error) {
+	keyName := m.KeyName(domain)
+	state, ok := m.ocspState[keyName]
+	if ok {
 		if bytes.Equal(state.cert.Certificate[0], cert.Certificate[0]) {
-			state.RLock()
-			defer state.RUnlock()
-			return state.ocspDER, state.nextUpdate, nil
-		} else {
-			state.renewal.stop()
-			delete(m.ocspState, keyName)
+			return state, nil
 		}
+		// the cached state is outdated, remove it
+		state.renewal.stop()
+		delete(m.ocspState, keyName)
 	}
 
 	issuer, err := x509.ParseCertificate(cert.Certificate[len(cert.Certificate)-1])
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, err
 	}
-	der, response, err := m.updateOCSPStapling(ctx, cert, issuer)
+	der, response, err := m.requestOCSPStapling(ctx, cert, issuer)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, err
 	}
 	state = &ocspState{
 		cert:       cert,
@@ -177,28 +211,33 @@ func (m *Manager) GetOCSPStapling(domain string) ([]byte, time.Time, error) {
 	// start OCSP stapling renewal timer loop
 	go state.renewal.start(state.nextUpdate)
 
-	return state.ocspDER, state.nextUpdate, nil
+	return state, nil
 }
 
-func (m *Manager) updateOCSPStapling(ctx context.Context, cert *tls.Certificate, issuer *x509.Certificate) (der []byte, resp *ocsp.Response, err error) {
+func (m *Manager) requestOCSPStapling(ctx context.Context, cert *tls.Certificate, issuer *x509.Certificate) (der []byte, resp *ocsp.Response, err error) {
 	ocspReq, err := ocsp.CreateRequest(cert.Leaf, issuer, nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	httpResp, err := httpClient.Post(cert.Leaf.OCSPServer[0], "application/ocsp-request", bytes.NewBuffer(ocspReq))
+	httpReq, err := http.NewRequest("POST", cert.Leaf.OCSPServer[0], bytes.NewBuffer(ocspReq))
+	if err != nil {
+		return nil, nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/ocsp-request")
+	httpResp, err := httpClient.Do(httpReq.WithContext(ctx))
 	if err != nil {
 		return nil, nil, err
 	}
 	defer httpResp.Body.Close()
-	body, err := ioutil.ReadAll(httpResp.Body)
+	der, err = ioutil.ReadAll(httpResp.Body)
 	if err != nil {
 		return nil, nil, err
 	}
-	resp, err = ocsp.ParseResponse(body, issuer)
+	resp, err = ocsp.ParseResponse(der, issuer)
 	if err != nil {
 		return nil, nil, err
 	}
-	return body, resp, nil
+	return der, resp, nil
 }
 
 type ocspState struct {
@@ -220,17 +259,16 @@ type ocspRenewal struct {
 }
 
 func (or *ocspRenewal) start(next time.Time) {
-	log.Println("starting OCSP stapling renewal: key_name=", or.keyName, "next_update=", next.Format(time.RFC3339Nano))
 	or.timerMu.Lock()
 	defer or.timerMu.Unlock()
 	if or.timer != nil {
 		return
 	}
 	or.timer = time.AfterFunc(or.next(next), or.update)
+	log.Println("started OCSP stapling renewal: key_name=", or.keyName, "next_update=", next.Format(time.RFC3339Nano))
 }
 
 func (or *ocspRenewal) stop() {
-	log.Println("stoping OCSP stapling renewal: key_name=", or.keyName)
 	or.timerMu.Lock()
 	defer or.timerMu.Unlock()
 	if or.timer == nil {
@@ -238,6 +276,7 @@ func (or *ocspRenewal) stop() {
 	}
 	or.timer.Stop()
 	or.timer = nil
+	log.Println("stoped OCSP stapling renewal: key_name=", or.keyName)
 }
 
 func (or *ocspRenewal) update() {
@@ -253,15 +292,13 @@ func (or *ocspRenewal) update() {
 	state, ok := or.m.ocspState[or.keyName]
 	or.m.ocspStateMu.RUnlock()
 	if !ok || state.renewal != or {
-		// state has been removed / replaced, stop the old renewal and trigger
-		// caching OCSP stapling for the new certificate
+		// state has been removed / replaced, stop the old renewal
 		or.timer = nil
-		go or.m.GetOCSPStapling(or.domain)
 		return
 	}
 
 	var next time.Duration
-	der, response, err := or.m.updateOCSPStapling(ctx, state.cert, state.issuer)
+	der, response, err := or.m.requestOCSPStapling(ctx, state.cert, state.issuer)
 	if err != nil {
 		log.Println("update OCSP stapling failed: key_name=", or.keyName, "err=", err)
 		next = renewJitter / 2
