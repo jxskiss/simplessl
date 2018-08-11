@@ -12,9 +12,14 @@ I got inspires and stole some code from the awesome project [lua-resty-auto-ssl]
 
 ## Status
 
-Considered BETA, used in our production deployment.
+Considered ALPHA. This is an spare-time project, anyone interested with this project are HIGHLY RECOMMENDED to do testing in your environment.
 
-Users are highly RECOMMENDED to do testing in your environment.
+NOTE:
+
+The release version 0.1.x has a bug which may cause dead loop in OCSP stapling updater after months long running.
+The bug has not much impact on CPU usage, but will blow up the logging files.
+
+If anyone is using the 0.1.x release, please consider upgrade to 0.2.x release as soon as possible.
 
 ## Installation
 
@@ -45,11 +50,10 @@ Run your cert server (eg: for any sub-domain of example.com):
 ```bash
 /path/to/ssl-cert-server --listen=127.0.0.1:8999 \
     --email=admin@example.com \
-    --pattern=".*\\.example\\.com$" \
-    --logtostderr
+    --pattern=".*\\.example\\.com$"
 ```
 
-For all available options for `ssl-cert-server` service, please read through.
+For all available options for `ssl-cert-server` service, please see the "Available options" section.
 
 Now you can configure your OpenResty to use the cert server for SSL certificates, see the following configuration example.
 
@@ -137,8 +141,6 @@ Usage of ssl-cert-server:
         listen address, be sure DON't open to the world (default "127.0.0.1:8999")
   -email string
         contact email, if Let's Encrypt client's key is already registered, this is not used
-  -staging
-        use Let's Encrypt staging directory (default false)
   -force-rsa
         generate certificates with 2048-bit RSA keys (default false)
   -before int
@@ -150,22 +152,8 @@ Usage of ssl-cert-server:
   -pattern value
         allowed domain regex pattern using POSIX ERE (egrep) syntax, (may be given multiple times,
         will be ignored when domain parameters supplied)
-  -log_backtrace_at value
-        when logging hits line file:N, emit a stack trace
-  -log_dir string
-        If non-empty, write log files in this directory
-  -logtostderr
-        log to standard error instead of files
-  -alsologtostderr
-        log to standard error as well as files
-  -shortlog
-        use simple short log header (default true)
-  -stderrthreshold value
-        logs at or above this threshold go to stderr
-  -v value
-        log level for V logs
-  -vmodule value
-        comma-separated list of pattern=N settings for file-filtered logging
+  -staging
+        use Let's Encrypt staging directory (default false)
   -version
         print version string and quit
 ```
@@ -174,6 +162,24 @@ Usage of ssl-cert-server:
 
 - [OpenResty](https://openresty.org/)
 - [lua-resty-http](https://github.com/pintsized/lua-resty-http)
+
+## Changes
+
+### v0.2.0 @ 2018-08-11
+
+- fix: dead loop in OCSP stapling updater after months long running
+- change: remove unnecessary golang dependencies (`gocraft/web`, `jxskiss/glog`), resulting smaller binary size and easier installation
+- change: since glog dependency has been removed, the flags provided by glog are not available anymore
+- change: use official `acme/autocert` package instead of forking, makes code clearer and allows easier tracking of upstream changes
+- new: use glide to manage golang dependencies
+
+### v0.1.2 @ 2018-06-20
+
+- fix: 408 Request Time-out from OCSP stapling server
+
+### v0.1.1 @ 2018-01-06
+
+Initial public release.
 
 ## TODO
 

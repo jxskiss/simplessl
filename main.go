@@ -43,7 +43,7 @@ var (
 	patternList StringArray
 
 	showVersion = flag.Bool("version", false, "print version string and quit")
-	listen      = flag.String("listen", "127.0.0.1:8999", "listen address, be sure DON't open to the world")
+	listen      = flag.String("listen", "127.0.0.1:8999", "listen address, be sure DON'T open to the world")
 	staging     = flag.Bool("staging", false, "use Let's Encrypt staging directory (default false)")
 	cacheDir    = flag.String("cache-dir", "./secret-dir", "which directory to cache certificates")
 	before      = flag.Int("before", 30, "renew certificates before how many days")
@@ -53,7 +53,7 @@ var (
 
 func main() {
 	flag.Var(&domainList, "domain", "allowed domain names (may be given multiple times)")
-	flag.Var(&patternList, "pattern", "allowed domain regex pattern using POSIX ERE (egrep) syntax, (may be given multiple times, ignored when domain parameters supplied)")
+	flag.Var(&patternList, "pattern", "allowed domain regex pattern using POSIX ERE (egrep) syntax, (may be given multiple times, will be ignored when domain parameters supplied)")
 	flag.Parse()
 
 	if *showVersion {
