@@ -25,6 +25,17 @@ import (
 
 const VERSION = "0.2.0"
 
+var (
+	RspInvalidDomainName    = []byte("Invalid domain name.")
+	RspHostNotPermitted     = []byte("Host name not permitted.")
+	RspNoValidCertificate   = []byte("No valid certificate available.")
+	RspNoValidOCSPStapling  = []byte("No valid OCSP stapling available.")
+	RspDomainNotCached      = []byte("Domain certificate not cached.")
+	RspErrGetCertificate    = []byte("Error getting certificate.")
+	RspErrEncodeCertificate = []byte("Error encode certificate.")
+	RspErrGetOCSPStapling   = []byte("Error get OCSP stapling.")
+)
+
 // StringArray implements flag.Value interface.
 type StringArray []string
 
@@ -96,6 +107,7 @@ func main() {
 		},
 		ForceRSA: *forceRSA,
 	}
+	go manager.listenCertChanges()
 
 	mux := http.NewServeMux()
 	mux.Handle("/cert/", loggingMiddleware(http.HandlerFunc(manager.HandleCertificate)))
@@ -103,9 +115,9 @@ func main() {
 	mux.Handle("/.well-known/acme-challenge/", loggingMiddleware(manager.m.HTTPHandler(nil)))
 	server := http.Server{Addr: *listen, Handler: mux}
 	go func() {
-		log.Printf("start server listening on http://%v\n", *listen)
+		log.Printf("[INFO] server: listening on http://%v\n", *listen)
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			log.Fatalln("server stopped: err=", err)
+			log.Fatalln("[FATAL] server: stopped unexpectly: err=", err)
 		}
 	}()
 
@@ -115,35 +127,35 @@ func main() {
 	<-stop
 	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = server.Shutdown(ctx)
-	log.Println("server shutdown gracefully")
+	log.Println("[INFO] server: shutdown gracefully")
 }
 
 func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/cert/")
 	if err := m.checkDomainName(domain); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("Invalid domain name."))
+		w.Write(RspInvalidDomainName)
 		return
 	}
 	cert, err := m.GetCertificateByName(domain)
 	if err != nil {
 		if err == ErrHostNotPermitted {
-			log.Println("domain name not permitted: domain=", domain)
+			log.Println("[WARN] manager: domain name not permitted: domain=", domain)
 			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte("Host name not permitted."))
+			w.Write(RspHostNotPermitted)
 		} else {
-			log.Println("failed get certificate: domain=", domain, "err=", err)
+			log.Println("[ERROR] manager: failed get certificate: domain=", domain, "err=", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Error getting certificate."))
+			w.Write(RspErrGetCertificate)
 		}
 		return
 	}
 
 	var ttl = time.Until(cert.Leaf.NotAfter)
 	if ttl <= 0 {
-		log.Println("got expired certificate: domain=", domain)
+		log.Println("[WARN] manager: got expired certificate: domain=", domain)
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("No valid certificate available."))
+		w.Write(RspNoValidCertificate)
 		return
 	}
 	ttlSeconds := m.limitTTL(ttl)
@@ -155,9 +167,9 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	for _, b := range cert.Certificate {
 		pb := &pem.Block{Type: "CERTIFICATE", Bytes: b}
 		if err = pem.Encode(&certBuf, pb); err != nil {
-			log.Println("failed encode certificate: domain=", domain, "err=", err)
+			log.Println("[ERROR] manager: failed encode certificate: domain=", domain, "err=", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Error encode certificate."))
+			w.Write(RspErrEncodeCertificate)
 			return
 		}
 	}
@@ -170,9 +182,9 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("unknown private key type")
 	}
 	if err != nil {
-		log.Printf("failed encode private key: domain= %v type= %T err= %v\n", domain, cert.PrivateKey, err)
+		log.Printf("[ERROR] manager: failed encode private key: domain= %v type= %T err= %v\n", domain, cert.PrivateKey, err)
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Error encode certificate key."))
+		w.Write(RspErrEncodeCertificate)
 		return
 	}
 
@@ -196,27 +208,27 @@ func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/ocsp/")
 	if err := m.checkDomainName(domain); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("Invalid domain name."))
+		w.Write(RspInvalidDomainName)
 		return
 	}
 	response, nextUpdate, err := m.GetOCSPStapling(domain)
 	if err != nil {
 		if err == autocert.ErrCacheMiss {
 			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte("Domain certificate not cached."))
+			w.Write(RspDomainNotCached)
 		} else {
-			log.Println("failed get OCSP stapling: domain=", domain, "err=", err)
+			log.Println("[ERROR] manager: failed get OCSP stapling: domain=", domain, "err=", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Error get OCSP stapling."))
+			w.Write(RspErrGetOCSPStapling)
 		}
 		return
 	}
 
 	var ttl = time.Until(nextUpdate)
 	if ttl <= 0 {
-		log.Println("got expired OCSP stapling: domain=", domain)
+		log.Println("[WARN] manager: got expired OCSP stapling: domain=", domain)
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("No valid OCSP stapling available."))
+		w.Write(RspNoValidOCSPStapling)
 		return
 	}
 	ttlSeconds := m.limitTTL(ttl)

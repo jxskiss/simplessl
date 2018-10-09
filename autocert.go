@@ -23,8 +23,11 @@ import (
 	"golang.org/x/crypto/ocsp"
 )
 
-// renewJitter is the maximum deviation from Manager.RenewBefore.
-const renewJitter = time.Hour
+const (
+	certsCheckInterval = time.Second
+	renewJitter        = time.Hour
+	renewBefore        = time.Hour * 48
+)
 
 // pseudoRand is safe for concurrent use.
 var pseudoRand *lockedMathRand
@@ -134,19 +137,6 @@ func (m *Manager) GetCertificateByName(name string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	// trigger caching OCSP stapling in case of new certificate
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		m.ocspStateMu.Lock()
-		defer m.ocspStateMu.Unlock()
-		keyName := m.KeyName(name)
-		_, err := m.loadOCSPState(ctx, name, cert)
-		if err != nil {
-			log.Println("trigger cache OCSP stapling failed: key_name=", keyName, "err=", err)
-		}
-	}()
 	return cert, nil
 }
 
@@ -240,6 +230,51 @@ func (m *Manager) requestOCSPStapling(ctx context.Context, cert *tls.Certificate
 	return der, resp, nil
 }
 
+func (m *Manager) listenCertChanges() {
+	var ticker = time.NewTicker(certsCheckInterval)
+	for range ticker.C {
+		m.ocspStateMu.RLock()
+		states := make([]*ocspState, 0, len(m.ocspState))
+		for _, state := range m.ocspState {
+			states = append(states, state)
+		}
+		m.ocspStateMu.RUnlock()
+
+		// at most 10 concurrent goroutines
+		ticket := make(chan struct{}, 10)
+		for _, state := range states {
+			ticket <- struct{}{}
+			go m.triggerOCSPState(state.renewal.domain, nil, func() { <-ticket })
+		}
+	}
+}
+
+func (m *Manager) triggerOCSPState(domain string, cert *tls.Certificate, callback func()) {
+	if callback != nil {
+		defer callback()
+	}
+
+	var err error
+	if cert == nil {
+		cert, err = m.m.GetCertificate(m.helloInfo(domain))
+		if err != nil {
+			log.Println("[ERROR] manager: failed get certificate: domain=", domain, "err=", err)
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	m.ocspStateMu.Lock()
+	defer m.ocspStateMu.Unlock()
+	_, err = m.loadOCSPState(ctx, domain, cert)
+	if err != nil {
+		keyName := m.KeyName(domain)
+		log.Println("[ERROR] manager: failed trigger cache OCSP stapling: key_name=", keyName, "err=", err)
+		return
+	}
+}
+
 type ocspState struct {
 	sync.RWMutex
 	cert       *tls.Certificate
@@ -265,7 +300,7 @@ func (or *ocspRenewal) start(next time.Time) {
 		return
 	}
 	or.timer = time.AfterFunc(or.next(next), or.update)
-	log.Println("started OCSP stapling renewal: key_name=", or.keyName, "next_update=", next.Format(time.RFC3339Nano))
+	log.Println("[INFO] ocsp renewal: started OCSP stapling renewal: key_name=", or.keyName, "next_update=", next.Format(time.RFC3339Nano))
 }
 
 func (or *ocspRenewal) stop() {
@@ -276,7 +311,7 @@ func (or *ocspRenewal) stop() {
 	}
 	or.timer.Stop()
 	or.timer = nil
-	log.Println("stoped OCSP stapling renewal: key_name=", or.keyName)
+	log.Println("[INFO] ocsp renewal: stoped OCSP stapling renewal: key_name=", or.keyName)
 }
 
 func (or *ocspRenewal) update() {
@@ -300,11 +335,11 @@ func (or *ocspRenewal) update() {
 	var next time.Duration
 	der, response, err := or.m.requestOCSPStapling(ctx, state.cert, state.issuer)
 	if err != nil {
-		log.Println("update OCSP stapling failed: key_name=", or.keyName, "err=", err)
+		log.Println("[ERROR] ocsp renewal: failed request OCSP stapling: key_name=", or.keyName, "err=", err)
 		next = renewJitter / 2
 		next += time.Duration(pseudoRand.int63n(int64(next)))
 	} else {
-		log.Println("update OCSP stapling success: key_name=", or.keyName, "next_update=", response.NextUpdate.Format(time.RFC3339Nano))
+		log.Println("[INFO] ocsp renewal: request OCSP stapling success: key_name=", or.keyName, "next_update=", response.NextUpdate.Format(time.RFC3339Nano))
 		state.Lock()
 		defer state.Unlock()
 		state.ocspDER = der
@@ -318,8 +353,8 @@ func (or *ocspRenewal) update() {
 
 func (or *ocspRenewal) next(expiry time.Time) time.Duration {
 	var d time.Duration
-	if expiry.Sub(timeNow()) > 48*time.Hour {
-		d = expiry.Sub(timeNow()) - 48*time.Hour
+	if ttl := expiry.Sub(timeNow()); ttl > renewBefore {
+		d = ttl - renewBefore
 	}
 	// add a bit randomness to renew deadline
 	n := pseudoRand.int63n(int64(renewJitter))
