@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jxskiss/ssl-cert-server/storage"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -56,7 +57,8 @@ var (
 	showVersion = flag.Bool("version", false, "print version string and quit")
 	listen      = flag.String("listen", "127.0.0.1:8999", "listen address, be sure DON'T open to the world")
 	staging     = flag.Bool("staging", false, "use Let's Encrypt staging directory (default false)")
-	cacheDir    = flag.String("cache-dir", "./secret-dir", "which directory to cache certificates")
+	cacheDir    = flag.String("cache-dir", "./secret-dir", "which directory to cache certificates, will be ignored if --redis provided")
+	redisDSN    = flag.String("redis", "", "use redis as certificates cache storage")
 	before      = flag.Int("before", 30, "renew certificates before how many days")
 	email       = flag.String("email", "", "contact email, if Let's Encrypt client's key is already registered, this is not used")
 	forceRSA    = flag.Bool("force-rsa", false, "generate certificates with 2048-bit RSA keys (default false)")
@@ -96,10 +98,15 @@ func main() {
 		directoryUrl = acme.LetsEncryptURL
 	}
 
+	cacheImpl, err := parseCacheImpl()
+	if err != nil {
+		log.Fatalf("failed parse cache storeage: %v", err)
+	}
+
 	manager := &Manager{
 		m: &autocert.Manager{
 			Prompt:      autocert.AcceptTOS,
-			Cache:       autocert.DirCache(*cacheDir),
+			Cache:       cacheImpl,
 			RenewBefore: time.Duration(*before) * 24 * time.Hour,
 			Client:      &acme.Client{DirectoryURL: directoryUrl},
 			Email:       *email,
@@ -128,6 +135,15 @@ func main() {
 	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = server.Shutdown(ctx)
 	log.Println("[INFO] server: shutdown gracefully")
+}
+
+func parseCacheImpl() (autocert.Cache, error) {
+	if *redisDSN != "" {
+		return storage.NewRedisCache(*redisDSN)
+	}
+
+	// default directory cache
+	return autocert.DirCache(*cacheDir), nil
 }
 
 func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
@@ -284,7 +300,7 @@ func (lrw *loggingResponseWriter) WriteHeader(code int) {
 	lrw.ResponseWriter.WriteHeader(code)
 }
 
-func loggingMiddleware(hdlr http.Handler) http.Handler {
+func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		lrw := &loggingResponseWriter{w, http.StatusOK}
 		defer func(start time.Time) {
@@ -294,6 +310,6 @@ func loggingMiddleware(hdlr http.Handler) http.Handler {
 			logTime := now.Format("20060102 15:04:05")
 			accessLogger.Printf(LogFormat, logTime, req.RemoteAddr, lrw.statusCode, req.Method, req.RequestURI, now.Sub(start))
 		}(time.Now())
-		hdlr.ServeHTTP(lrw, req)
+		next.ServeHTTP(lrw, req)
 	})
 }
