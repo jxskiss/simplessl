@@ -2,7 +2,8 @@ t/servroot/
 t/error.log
 lua-resty-http*
 luacov*
-vendor/
+vendor/*
+!vendor/modules.txt
 
 .idea/
 .vscode/

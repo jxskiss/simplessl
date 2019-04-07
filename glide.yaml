@@ -1,7 +1,0 @@
-package: github.com/jxskiss/ssl-cert-server
-import:
-- package: golang.org/x/crypto
-  subpackages:
-  - acme
-  - acme/autocert
-  - ocsp
