@@ -19,12 +19,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jxskiss/ssl-cert-server/storage"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
 
 const VERSION = "0.2.0"
+
+const stagingDirectoryURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
 var (
 	RspInvalidDomainName    = []byte("Invalid domain name.")
@@ -49,6 +50,26 @@ func (v *StringArray) String() string {
 	return strings.Join(*v, ",")
 }
 
+type storage struct {
+	cacheDir string
+	redisDSN string
+
+	autocert.Cache
+	impl map[string]func(string) (autocert.Cache, error)
+}
+
+func (p *storage) parse() error {
+	var err error
+	switch {
+	case p.redisDSN != "":
+		p.Cache, err = p.impl["redis"](p.redisDSN)
+	default:
+		// default directory cache
+		p.Cache = autocert.DirCache(p.cacheDir)
+	}
+	return err
+}
+
 // flags
 var (
 	domainList  StringArray
@@ -57,16 +78,19 @@ var (
 	showVersion = flag.Bool("version", false, "print version string and quit")
 	listen      = flag.String("listen", "127.0.0.1:8999", "listen address, be sure DON'T open to the world")
 	staging     = flag.Bool("staging", false, "use Let's Encrypt staging directory (default false)")
-	cacheDir    = flag.String("cache-dir", "./secret-dir", "which directory to cache certificates, will be ignored if --redis provided")
-	redisDSN    = flag.String("redis", "", "use redis as certificates cache storage")
 	before      = flag.Int("before", 30, "renew certificates before how many days")
 	email       = flag.String("email", "", "contact email, if Let's Encrypt client's key is already registered, this is not used")
 	forceRSA    = flag.Bool("force-rsa", false, "generate certificates with 2048-bit RSA keys (default false)")
+
+	store = &storage{
+		impl: make(map[string]func(string) (autocert.Cache, error)),
+	}
 )
 
 func main() {
 	flag.Var(&domainList, "domain", "allowed domain names (may be given multiple times)")
 	flag.Var(&patternList, "pattern", "allowed domain regex pattern using POSIX ERE (egrep) syntax, (may be given multiple times, will be ignored when domain parameters supplied)")
+	flag.StringVar(&store.cacheDir, "cache-dir", "./secret-dir", "which directory to cache certificates, will be ignored if other storage provided")
 	flag.Parse()
 
 	if *showVersion {
@@ -93,12 +117,12 @@ func main() {
 
 	var directoryUrl string
 	if *staging {
-		directoryUrl = "https://acme-staging.api.letsencrypt.org/directory"
+		directoryUrl = stagingDirectoryURL
 	} else {
 		directoryUrl = acme.LetsEncryptURL
 	}
 
-	cacheImpl, err := parseCacheImpl()
+	err := store.parse()
 	if err != nil {
 		log.Fatalf("failed parse cache storeage: %v", err)
 	}
@@ -106,7 +130,7 @@ func main() {
 	manager := &Manager{
 		m: &autocert.Manager{
 			Prompt:      autocert.AcceptTOS,
-			Cache:       cacheImpl,
+			Cache:       store,
 			RenewBefore: time.Duration(*before) * 24 * time.Hour,
 			Client:      &acme.Client{DirectoryURL: directoryUrl},
 			Email:       *email,
@@ -135,15 +159,6 @@ func main() {
 	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = server.Shutdown(ctx)
 	log.Println("[INFO] server: shutdown gracefully")
-}
-
-func parseCacheImpl() (autocert.Cache, error) {
-	if *redisDSN != "" {
-		return storage.NewRedisCache(*redisDSN)
-	}
-
-	// default directory cache
-	return autocert.DirCache(*cacheDir), nil
 }
 
 func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {

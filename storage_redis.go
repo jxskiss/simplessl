@@ -1,11 +1,20 @@
-package storage
+// +build redis
+
+package main
 
 import (
 	"context"
+	"flag"
 	"github.com/go-redis/redis"
+	"golang.org/x/crypto/acme/autocert"
 )
 
-func NewRedisCache(redisURL string) (*rediscache, error) {
+func init() {
+	flag.StringVar(&store.redisDSN, "redis", "", "use redis as certificates cache storage (eg. 127.0.0.1:6379/0)")
+	store.impl["redis"] = NewRedisCache
+}
+
+func NewRedisCache(redisURL string) (autocert.Cache, error) {
 	opt, err := redis.ParseURL(redisURL)
 	if err != nil {
 		return nil, err
