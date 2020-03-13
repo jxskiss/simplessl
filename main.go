@@ -23,7 +23,7 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
-const VERSION = "0.2.0"
+const VERSION = "0.3.0"
 
 const stagingDirectoryURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
 

@@ -4,7 +4,7 @@ local ssl = require "ngx.ssl"
 local resty_lock = require "resty.lock"
 local resty_http = require "resty.http"
 
-local _M = { _VERSION = '0.2.0' }
+local _M = { _VERSION = '0.3.0' }
 
 function _M.new(options)
     options = options or {}

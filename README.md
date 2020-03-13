@@ -12,14 +12,16 @@ I got inspires and stole some code from the awesome project [lua-resty-auto-ssl]
 
 ## Status
 
-Considered ALPHA. This is an spare-time project, anyone interested with this project are HIGHLY RECOMMENDED to do testing in your environment.
+Considered STABLE.
+This program has been running for more than 2 years for my personal sites, but as is a spare-time project,
+anyone interested with this is HIGHLY RECOMMENDED to do testing in your environment.
 
 NOTE:
 
 The release version 0.1.x has a bug which may cause dead loop in OCSP stapling updater after months long running.
 The bug has not much impact on CPU usage, but will blow up the logging files.
 
-If anyone is using the 0.1.x release, please consider upgrade to 0.2.x release as soon as possible.
+If anyone is using the 0.1.x release, please consider upgrade to newer release as soon as possible.
 
 ## Installation
 
@@ -71,7 +73,7 @@ http {
     lua_shared_dict ssl_certs_cache 1m;
 
     init_by_lua_block {
-        -- Define a funcction to determine which SNI domains to automatically
+        -- Define a function to determine which SNI domains to automatically
         -- handle and register new certificates for. Defaults to not allowing
         -- any domain, so this must be configured.
         function allow_domain(domain)
@@ -120,7 +122,7 @@ http {
     # HTTP Server
     server {
         listen 80;
-        server_name example.com;
+        server_name hello.example.com;
 
         # Endpoint used for performing domain verification with Let's Encrypt.
         location /.well-known/acme-challenge/ {
@@ -164,6 +166,17 @@ Usage of ssl-cert-server:
 - [lua-resty-http](https://github.com/pintsized/lua-resty-http)
 
 ## Changes
+
+### v0.3.0 @ 2020-03-13
+
+- new: optional redis as cache storage
+- change: update autocert to support ACMEv2
+- change: use go module to manage golang dependency
+
+### v0.2.1 @ 2018-10-10
+
+- change: tidy logging messages
+- change: minor improvements
 
 ### v0.2.0 @ 2018-08-11
 
