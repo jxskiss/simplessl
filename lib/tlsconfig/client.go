@@ -26,29 +26,42 @@ type cacheItem struct {
 }
 
 type Client struct {
-	host  string
+	serverHost string
+	opts       *Options
+	hostPolicy func(name string) error
+
 	cache sync.Map
 }
 
-func NewClient(sslCertServerHost string) *Client {
+func NewClient(sslCertServerHost string, opts *Options) *Client {
 	if !strings.HasPrefix(sslCertServerHost, "http://") {
 		sslCertServerHost = "http://" + sslCertServerHost
 	}
 	sslCertServerHost = strings.TrimSuffix(sslCertServerHost, "/")
 	client := &Client{
-		host: sslCertServerHost,
+		serverHost: sslCertServerHost,
 	}
-	go client.Watch()
+
+	go client.watch()
+
+	if opts != nil {
+		// make host policy
+		client.hostPolicy = makeHostWhitelist(opts.AllowDomains...)
+
+		// preload certificates for pre-defined domain names
+		client.preloadDomains(opts.PreloadDomains...)
+	}
+
 	return client
 }
 
 func (c *Client) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	name := hello.ServerName
 	if name == "" {
-		return nil, errors.New("missing server name")
+		return nil, errors.New("tlsconfig: missing server name")
 	}
 	if !strings.Contains(strings.Trim(name, "."), ".") {
-		return nil, errors.New("server name component count invalid")
+		return nil, errors.New("tlsconfig: server name component count invalid")
 	}
 
 	// Note that this conversion is necessary because some server names in the handshakes
@@ -61,10 +74,19 @@ func (c *Client) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 	// idna.Punycode.ToASCII (or just idna.ToASCII) here.
 	name, err := idna.Lookup.ToASCII(name)
 	if err != nil {
-		return nil, errors.New("server name contains invalid character")
+		return nil, errors.New("tlsconfig: server name contains invalid character")
+	}
+
+	if c.hostPolicy != nil {
+		if err := c.hostPolicy(name); err != nil {
+			return nil, err
+		}
 	}
 
 	cert, err := c.getCertificate(name)
+	if err != nil {
+		return nil, fmt.Errorf("tlsconfig: failed get certificate: %v", err)
+	}
 	return cert, err
 }
 
@@ -89,7 +111,7 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 	// don't fail the server request in case of unavailable
 	stapling, staplingExpire, err := c.requestStapling(ctx, domainName)
 	if err != nil {
-		log.Printf("[WARN] failed request OCSP stapling: %v", err)
+		log.Printf("[WARN] tlsconfig: failed request OCSP stapling: %s: %v", domainName, err)
 	}
 
 	cert.OCSPStaple = stapling
@@ -112,7 +134,7 @@ func (c *Client) requestCertificate(ctx context.Context, domainName string) (
 		TTL      int64  `json:"ttl"`       // in seconds
 	}
 
-	apiPath := c.host + "/cert/" + domainName
+	apiPath := c.serverHost + "/cert/" + domainName
 	req, err := http.NewRequestWithContext(ctx, "GET", apiPath, nil)
 	if err != nil {
 		return
@@ -124,7 +146,7 @@ func (c *Client) requestCertificate(ctx context.Context, domainName string) (
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		err = fmt.Errorf("request certificate: bad http status: %d", resp.StatusCode)
+		err = fmt.Errorf("bad http status %d", resp.StatusCode)
 		return
 	}
 	err = json.NewDecoder(resp.Body).Decode(&response)
@@ -149,7 +171,7 @@ func (c *Client) requestCertificate(ctx context.Context, domainName string) (
 func (c *Client) requestStapling(ctx context.Context, domainName string) (
 	stapling []byte, expireAt int64, err error,
 ) {
-	apiPath := c.host + "/ocsp/" + domainName
+	apiPath := c.serverHost + "/ocsp/" + domainName
 	req, err := http.NewRequestWithContext(ctx, "GET", apiPath, nil)
 	if err != nil {
 		return
@@ -161,7 +183,7 @@ func (c *Client) requestStapling(ctx context.Context, domainName string) (
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		err = fmt.Errorf("request stapling: bad http status: %d", resp.StatusCode)
+		err = fmt.Errorf("bad http status %d", resp.StatusCode)
 		return
 	}
 	stapling, err = ioutil.ReadAll(resp.Body)
@@ -176,7 +198,7 @@ func (c *Client) requestStapling(ctx context.Context, domainName string) (
 	return
 }
 
-func (c *Client) Watch() {
+func (c *Client) watch() {
 	ticker := time.Minute
 	for range time.Tick(ticker) {
 
@@ -224,7 +246,7 @@ func (c *Client) refresh(cached map[string]*cacheItem) error {
 		if newCacheItem.certExpire <= now {
 			newCert, expireAt, err := c.requestCertificate(ctx, domainName)
 			if err != nil {
-				log.Printf("[WARN] failed refresh certificate: %s: %v", domainName, err)
+				log.Printf("[WARN] tlsconfig: failed refresh certificate: %s: %v", domainName, err)
 				if certErr == nil {
 					certErr = err
 				}
@@ -236,7 +258,7 @@ func (c *Client) refresh(cached map[string]*cacheItem) error {
 		if newCacheItem.staplingExpire <= now {
 			newStapling, expireAt, err := c.requestStapling(ctx, domainName)
 			if err != nil {
-				log.Printf("[WARN] failed refresh OCSP stapling: %s: %v", domainName, err)
+				log.Printf("[WARN] tlsconfig: failed refresh OCSP stapling: %s: %v", domainName, err)
 				if staplingErr == nil {
 					staplingErr = err
 				}

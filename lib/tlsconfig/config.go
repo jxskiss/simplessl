@@ -7,8 +7,8 @@ import (
 	"golang.org/x/crypto/acme"
 )
 
-func NewConfig(sslCertServerHost string) *tls.Config {
-	client := NewClient(sslCertServerHost)
+func NewConfig(sslCertServerHost string, opts *Options) *tls.Config {
+	client := NewClient(sslCertServerHost, opts)
 	config := &tls.Config{
 		GetCertificate: client.GetCertificate,
 
