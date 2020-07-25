@@ -10,7 +10,10 @@ import (
 )
 
 func init() {
-	flag.StringVar(&store.redisDSN, "redis", "", "use redis as certificates cache storage (eg. 127.0.0.1:6379/0)")
+	flag.StringVar(&store.redisDSN,
+		"redis",
+		"",
+		"use redis as certificates cache storage (eg. 127.0.0.1:6379/0)")
 	store.impl["redis"] = NewRedisCache
 }
 

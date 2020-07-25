@@ -23,6 +23,8 @@ import (
 	"golang.org/x/crypto/ocsp"
 )
 
+const stagingDirectoryURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
 const (
 	certsCheckInterval = time.Second
 	renewJitter        = time.Hour
