@@ -8,8 +8,26 @@ import (
 )
 
 type Options struct {
-	AllowDomains   []string
+	// AllowDomains optionally specifies which host names are allowed to
+	// respond to. If not specified, any valid domain will trigger
+	// certificate request towards the backend ssl cert server, and the
+	// backend server take responsibility to check host policy.
+	//
+	// It's recommended to set this option, it helps to reduce influence
+	// of unwelcome requests, such as DDOS, etc.
+	AllowDomains []string
+
+	// PreloadDomains optionally specifies host names to preload certificates
+	// when initializing the TLS config. It helps to accelerate the
+	// connecting speed of the first requests after the server started.
+	// It's recommended to set this option for production deployment to
+	// optimize end-user experience.
+	//
+	// As you may guess, this option will slow down the server startup
+	// time, you may enable the following PreloadAsync option to preload
+	// the certificates asynchronously in background.
 	PreloadDomains []string
+	PreloadAsync   bool
 }
 
 func makeHostWhitelist(hosts ...string) func(string) error {
@@ -30,11 +48,18 @@ func makeHostWhitelist(hosts ...string) func(string) error {
 	}
 }
 
-func (c *Client) preloadDomains(domains ...string) {
-	for _, domainName := range domains {
-		_, err := c.getCertificate(domainName)
-		if err != nil {
-			log.Printf("[WARN] tlsconfig: failed preload certificate: %s: %v", domainName, err)
+func (c *Client) preloadDomains(async bool, domains ...string) {
+	loadFunc := func() {
+		for _, domainName := range domains {
+			_, err := c.getCertificate(domainName)
+			if err != nil {
+				log.Printf("[WARN] tlsconfig: failed preload certificate: %s: %v", domainName, err)
+			}
 		}
+	}
+	if async {
+		go loadFunc()
+	} else {
+		loadFunc()
 	}
 }
