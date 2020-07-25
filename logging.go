@@ -32,3 +32,8 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(lrw, req)
 	})
 }
+
+func flushLogs() {
+	_ = os.Stdout.Sync()
+	_ = os.Stderr.Sync()
+}

@@ -10,11 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cloudflare/tableflip"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
 
 func main() {
+	defer flushLogs()
 	initFlags()
 	prepareConfig()
 
@@ -24,7 +26,7 @@ func main() {
 	}
 	err := store.parse()
 	if err != nil {
-		log.Fatalf("failed parse cache storeage: %v", err)
+		log.Fatalf("[FATAL] server: failed parse cache storeage: %v", err)
 	}
 
 	manager := &Manager{
@@ -42,19 +44,64 @@ func main() {
 
 	mux := http.NewServeMux()
 	buildRoutes(mux, manager)
-	server := http.Server{Addr: config.Listen, Handler: mux}
+
+	// Graceful restarts.
+	upg, err := tableflip.New(tableflip.Options{
+		UpgradeTimeout: time.Minute,
+		PIDFile:        config.PIDFile,
+	})
+	if err != nil {
+		log.Fatalf("[FATAL] server: failed init upgrader: %v", err)
+	}
+	defer upg.Stop()
+
+	// Do an upgrade on SIGUP
 	go func() {
-		log.Printf("[INFO] server: listening on http://%v", config.Listen)
-		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			log.Fatalln("[FATAL] server: stopped unexpectly: err=", err)
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGHUP)
+		for range sig {
+			err := upg.Upgrade()
+			if err != nil {
+				log.Printf("[ERROR] server: filed do upgrade: %v", err)
+			}
 		}
 	}()
 
-	// graceful shutdown
+	// Listen must be called before Ready
+	ln, err := upg.Listen("tcp", config.Listen)
+	if err != nil {
+		log.Fatalf("[FATAL] server: fialed listen: %v", err)
+	}
+	server := http.Server{Handler: mux}
+	go func() {
+		log.Printf("[INFO] server: listening on http://%v", config.Listen)
+		err := server.Serve(ln)
+		if err != http.ErrServerClosed {
+			log.Fatalf("[FATAL] server: stopped unexpectedly: %v", err)
+		}
+	}()
+
+	if err := upg.Ready(); err != nil {
+		log.Fatalf("[FATAL] server: upgrader not ready: %v", err)
+	}
+
 	stop := make(chan os.Signal)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
-	_ = server.Shutdown(ctx)
-	log.Println("[INFO] server: shutdown gracefully")
+	select {
+	case <-upg.Exit():
+		log.Printf("[INFO] server: received exit signal from upgrader")
+	case <-stop:
+		log.Printf("[INFO] server: received stop signal from system")
+	}
+
+	// Graceful shutdown the old process.
+	// Make sure to set a deadline on exiting the process after upg.Exit()
+	// is closed. No new upgrades can be performed if the parent doesn't exit.
+	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
+	err = server.Shutdown(ctx)
+	if err == nil {
+		log.Printf("[INFO] server: shutdown gracefully")
+	} else {
+		log.Printf("[WARN] server: failed graceful shutdown: %v", err)
+	}
 }

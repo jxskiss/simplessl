@@ -39,6 +39,9 @@ var config struct {
 	// DirectoryURL will be set to staging api if option Staging is true,
 	// else it will be Let's Encrypt production api.
 	DirectoryURL string
+
+	// PIDFile is used to do gracefully restarts.
+	PIDFile string
 }
 
 func initFlags() {
@@ -83,6 +86,8 @@ func initFlags() {
 }
 
 func prepareConfig() {
+
+	// HostPolicy
 	var hostPolicy autocert.HostPolicy
 	if len(config.DomainList) > 0 {
 		hostPolicy = HostWhitelist(config.DomainList...)
@@ -101,9 +106,13 @@ func prepareConfig() {
 	}
 	config.HostPolicy = hostPolicy
 
+	// DirectoryURL
 	if config.Staging {
 		config.DirectoryURL = stagingDirectoryURL
 	} else {
 		config.DirectoryURL = acme.LetsEncryptURL
 	}
+
+	// PIDFile
+	config.PIDFile = "ssl-cert-server.pid"
 }
