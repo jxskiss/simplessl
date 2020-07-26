@@ -12,14 +12,14 @@ import (
 
 func main() {
 	port := flag.Int("port", 6601, "port to listen")
-	sslServer := flag.String("ssl-server", "127.0.0.1:8999", "ssl-cert-server host:port")
+	certServer := flag.String("cert-server", "127.0.0.1:8999", "ssl-cert-server host:port")
 	flag.Parse()
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("It works!"))
 	}
 
-	tlsConfig := tlsconfig.NewConfig(*sslServer, nil)
+	tlsConfig := tlsconfig.NewConfig(*certServer, nil)
 	listener, err := tls.Listen("tcp", fmt.Sprintf(":%d", *port), tlsConfig)
 	if err != nil {
 		log.Fatal(err)

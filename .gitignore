@@ -4,6 +4,7 @@ lua-resty-http*
 luacov*
 vendor/*
 !vendor/modules.txt
+output/
 
 .idea/
 .vscode/
