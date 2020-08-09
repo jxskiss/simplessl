@@ -1,0 +1,36 @@
+listen: "127.0.0.1:8999"
+pid_file: "ssl-cert-server.pid"
+
+storage:
+  type: "dir_cache"  # or redis
+  dir_cache: "./secret_dir"
+  redis:
+    addr: "127.0.0.1:6379"
+
+managed:
+  - pattern: "abc\\.example\\.com"
+    cert: "abc.example.com.cert"
+    priv_key: "abc.example.com.key"
+  - pattern: "(\\w+)\\.example\\.com"
+    cert: "wildcard_example_com.cert"
+    priv_key: "wildcard_example_com.key"
+
+lets_encrypt:
+  staging: false
+  force_rsa: false
+  renew_before: 30
+  email: "abc@example.com"
+  domains:
+    - "site1.example.com"
+    - "site2.example.com"
+  re_patterns:
+    - "api1-(\\w+)\\.example\\.com"
+    - "api2-(\\w+)\\.example\\.com"
+
+self_signed:
+  enable: true
+  valid_days: 3650
+  organization:
+    - "SSL Cert Server Self-Signed"
+  cert: "self_signed.cert"
+  priv_key: "self_signed.key"

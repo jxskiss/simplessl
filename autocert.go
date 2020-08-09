@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
@@ -29,6 +30,15 @@ const (
 	certsCheckInterval = time.Second
 	renewJitter        = time.Hour
 	renewBefore        = time.Hour * 48
+)
+
+// TODO: check certificate type in client
+
+// certificate types
+const (
+	LetsEncrypt = 0
+	Managed     = 1
+	SelfSigned  = 2
 )
 
 // pseudoRand is safe for concurrent use.
@@ -102,6 +112,9 @@ type Manager struct {
 
 	ocspStateMu sync.RWMutex
 	ocspState   map[string]*ocspState
+
+	selfSignedMu   sync.Mutex
+	selfSignedCert atomic.Value // *tls.Certificate
 }
 
 func (m *Manager) KeyName(domain string) string {
@@ -133,7 +146,7 @@ func (m *Manager) helloInfo(domain string) *tls.ClientHelloInfo {
 	return helloInfo
 }
 
-func (m *Manager) GetCertificateByName(name string) (*tls.Certificate, error) {
+func (m *Manager) GetAutocertCertificate(name string) (*tls.Certificate, error) {
 	helloInfo := m.helloInfo(name)
 	cert, err := m.m.GetCertificate(helloInfo)
 	if err != nil {

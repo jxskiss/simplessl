@@ -53,7 +53,7 @@ func (c *Client) preloadDomains(async bool, domains ...string) {
 		for _, domainName := range domains {
 			_, err := c.getCertificate(domainName)
 			if err != nil {
-				log.Printf("[WARN] tlsconfig: failed preload certificate: %s: %v", domainName, err)
+				log.Printf("[WARN] tlsconfig: failed preload certificate: domain= %s err= %v", domainName, err)
 			}
 		}
 	}

@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/rsa"
+	"crypto/tls"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -40,7 +42,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 		w.Write(RspInvalidDomainName)
 		return
 	}
-	cert, err := m.GetCertificateByName(domain)
+	cert, certType, err := m.GetCertificateByName(domain)
 	if err != nil {
 		if err == ErrHostNotPermitted {
 			log.Println("[WARN] manager: domain name not permitted: domain=", domain)
@@ -92,19 +94,44 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response, _ := json.Marshal(struct {
+		Type     int    `json:"type"`
 		Cert     string `json:"cert"`
 		PKey     string `json:"pkey"`
 		ExpireAt int64  `json:"expire_at"` // seconds since epoch
 		TTL      int    `json:"ttl"`       // in seconds
 	}{
-		string(certBuf.Bytes()),
-		string(privKeyBuf.Bytes()),
-		cert.Leaf.NotAfter.Unix(),
-		ttlSeconds,
+		Type:     certType,
+		Cert:     string(certBuf.Bytes()),
+		PKey:     string(privKeyBuf.Bytes()),
+		ExpireAt: cert.Leaf.NotAfter.Unix(),
+		TTL:      ttlSeconds,
 	}) // error ignored, shall not fail
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(response)
+}
+
+func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, certType int, err error) {
+	// check managed domains first
+	if cert, privKey, ok := m.IsManagedDomain(name); ok {
+		certType = Managed
+		tlscert, err = m.GetManagedCertificate(cert, privKey)
+	} else
+	// check auto issued certificates from Let's Encrypt
+	if err := m.m.HostPolicy(context.Background(), name); err == nil {
+		certType = LetsEncrypt
+		tlscert, err = m.GetAutocertCertificate(name)
+	} else
+	// check self-signed
+	if m.IsSelfSignedAllowed(name) {
+		certType = SelfSigned
+		tlscert, err = m.GetSelfSignedCertificate()
+	} else
+	// host not allowed
+	{
+		err = ErrHostNotPermitted
+	}
+	return
 }
 
 func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {

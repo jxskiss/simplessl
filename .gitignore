@@ -9,3 +9,5 @@ output/
 .idea/
 .vscode/
 *.exe
+ssl-cert-server
+ssl-cert-server.pid

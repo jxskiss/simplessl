@@ -12,8 +12,8 @@ release:
 	done
 
 clean:
-	rm -rf ./ssl-cert-server ./output/*
+	rm -rf ./ssl-cert-server ./ssl-cert-server.pid ./output/*
 
-all : build release release clean
+all : build release clean
 
 .PHONY : all

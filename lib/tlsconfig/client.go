@@ -125,11 +125,16 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 		return nil, err
 	}
 
-	// OCSP stapling is optional
-	// don't fail the server request in case of unavailable
-	stapling, staplingExpire, staplingRefresh, err := c.requestStapling(ctx, domainName)
-	if err != nil {
-		log.Printf("[WARN] tlsconfig: failed request OCSP stapling: %s: %v", domainName, err)
+	// If OCSP is enabled, get it.
+	// And since OCSP stapling is optional, we don't fail the server request
+	// in case of OCSP stapling unavailable.
+	var stapling []byte
+	var staplingRefresh, staplingExpire int64
+	if len(cert.Leaf.OCSPServer) > 0 {
+		stapling, staplingExpire, staplingRefresh, err = c.requestStapling(ctx, domainName)
+		if err != nil {
+			log.Printf("[WARN] tlsconfig: failed request OCSP stapling: domain= %s err= %v", domainName, err)
+		}
 	}
 
 	cert.OCSPStaple = stapling
@@ -268,7 +273,7 @@ func (c *Client) refresh(cached map[string]*cacheItem) error {
 		if newCacheItem.certRefresh <= now {
 			newCert, expireAt, refreshAt, err := c.requestCertificate(ctx, domainName)
 			if err != nil {
-				log.Printf("[WARN] tlsconfig: failed refresh certificate: %s: %v", domainName, err)
+				log.Printf("[WARN] tlsconfig: failed refresh certificate: domain= %s err= %v", domainName, err)
 				if certErr == nil {
 					certErr = err
 				}
@@ -281,7 +286,7 @@ func (c *Client) refresh(cached map[string]*cacheItem) error {
 		if newCacheItem.staplingRefresh <= now {
 			newStapling, expireAt, refreshAt, err := c.requestStapling(ctx, domainName)
 			if err != nil {
-				log.Printf("[WARN] tlsconfig: failed refresh OCSP stapling: %s: %v", domainName, err)
+				log.Printf("[WARN] tlsconfig: failed refresh OCSP stapling: domain= %s err= %v", domainName, err)
 				if staplingErr == nil {
 					staplingErr = err
 				}

@@ -427,6 +427,8 @@ function _M.ssl_certificate(self)
         return
     end
 
+    -- TODO: check whether OCSP servers available
+
     local stapling, err = get_stapling(self, domain)
     if stapling then
         local ok, err = set_stapling(self, stapling)
