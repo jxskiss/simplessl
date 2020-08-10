@@ -16,6 +16,8 @@ import (
 	"log"
 	"math/big"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
@@ -23,18 +25,23 @@ import (
 
 var defaultSelfSignedOrganization = []string{"SSL Cert Server Self-Signed"}
 
-func (m *Manager) IsSelfSignedAllowed(domain string) bool {
+var (
+	selfSignedMu   sync.Mutex
+	selfSignedCert atomic.Value // *tls.Certificate
+)
+
+func IsSelfSignedAllowed(domain string) bool {
 	return Cfg.SelfSigned.Enable
 }
 
-func (m *Manager) GetSelfSignedCertificate() (*tls.Certificate, error) {
-	if tlscert, ok := m.selfSignedCert.Load().(*tls.Certificate); ok {
+func GetSelfSignedCertificate() (*tls.Certificate, error) {
+	if tlscert, ok := selfSignedCert.Load().(*tls.Certificate); ok {
 		return tlscert, nil
 	}
 
-	m.selfSignedMu.Lock()
-	defer m.selfSignedMu.Unlock()
-	if tlscert, ok := m.selfSignedCert.Load().(*tls.Certificate); ok {
+	selfSignedMu.Lock()
+	defer selfSignedMu.Unlock()
+	if tlscert, ok := selfSignedCert.Load().(*tls.Certificate); ok {
 		return tlscert, nil
 	}
 
@@ -54,20 +61,20 @@ func (m *Manager) GetSelfSignedCertificate() (*tls.Certificate, error) {
 		if err != nil {
 			return nil, err
 		}
-		m.selfSignedCert.Store(tlscert)
+		selfSignedCert.Store(tlscert)
 		return &tlscert, nil
 	}
 
 	// cache not available, create new certificate
-	tlscert, err := m.createSelfSignedCertificate()
+	tlscert, err := createAndSaveSelfSignedCertificate()
 	if err != nil {
 		return nil, err
 	}
-	m.selfSignedCert.Store(tlscert)
+	selfSignedCert.Store(tlscert)
 	return tlscert, nil
 }
 
-func (m *Manager) createSelfSignedCertificate() (*tls.Certificate, error) {
+func createAndSaveSelfSignedCertificate() (*tls.Certificate, error) {
 	validDays := Cfg.SelfSigned.ValidDays
 	organization := Cfg.SelfSigned.Organization
 	certPEM, privKeyPEM, err := createSelfSignedCertificate(validDays, organization)

@@ -5,6 +5,8 @@ import (
 	"flag"
 	"io/ioutil"
 	"log"
+	"os"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -75,43 +77,25 @@ type config struct {
 }
 
 func (p *config) setupDefaultOptions() {
-	if Cfg.Listen == "" {
-		Cfg.Listen = "127.0.0.1:8999"
-	}
-	if Cfg.PIDFile == "" {
-		Cfg.Listen = "ssl-cert-server.pid"
-	}
+	setDefault(&Cfg.Listen, "127.0.0.1:8999")
+	setDefault(&Cfg.PIDFile, "ssl-cert-server.pid")
 
-	if Cfg.Storage.Type == "" {
-		Cfg.Storage.Type = "dir_cache"
-	}
-	if Cfg.Storage.DirCache == "" {
-		Cfg.Storage.DirCache = "./secret-dir"
-	}
-	if Cfg.Storage.Redis.Addr == "" {
-		Cfg.Storage.Redis.Addr = "127.0.0.1:6379"
-	}
+	setDefault(&Cfg.Storage.Type, "dir_cache")
+	setDefault(&Cfg.Storage.DirCache, "./secret-dir")
+	setDefault(&Cfg.Storage.Redis.Addr, "127.0.0.1:6379")
 
-	if Cfg.LetsEncrypt.RenewBefore <= 0 {
-		Cfg.LetsEncrypt.RenewBefore = 30
-	}
+	setDefault(&Cfg.LetsEncrypt.RenewBefore, 30)
 	if Cfg.LetsEncrypt.Staging {
 		Cfg.LetsEncrypt.DirectoryURL = stagingDirectoryURL
 	} else {
 		Cfg.LetsEncrypt.DirectoryURL = acme.LetsEncryptURL
 	}
 
-	if Cfg.SelfSigned.ValidDays <= 0 {
-		Cfg.SelfSigned.ValidDays = 365
-	}
+	setDefault(&Cfg.SelfSigned.ValidDays, 365)
+	setDefault(&Cfg.SelfSigned.Cert, "self_signed.cert")
+	setDefault(&Cfg.SelfSigned.PrivKey, "self_signed.key")
 	if len(Cfg.SelfSigned.Organization) == 0 {
 		Cfg.SelfSigned.Organization = defaultSelfSignedOrganization
-	}
-	if Cfg.SelfSigned.Cert == "" {
-		Cfg.SelfSigned.Cert = "self_signed.cert"
-	}
-	if Cfg.SelfSigned.PrivKey == "" {
-		Cfg.SelfSigned.PrivKey = "self_signed.key"
 	}
 }
 
@@ -173,12 +157,14 @@ func initFlags() {
 
 func initConfig() {
 	confbuf, err := ioutil.ReadFile(Flags.ConfigFile)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		log.Fatalf("[FATAL] server: failed read configuration: %v", err)
 	}
-	err = yaml.UnmarshalStrict(confbuf, Cfg)
-	if err != nil {
-		log.Fatalf("[FATAL] server: failed read configuration: %v", err)
+	if len(confbuf) > 0 {
+		err = yaml.UnmarshalStrict(confbuf, Cfg)
+		if err != nil {
+			log.Fatalf("[FATAL] server: failed read configuration: %v", err)
+		}
 	}
 
 	// Prepare configuration.
@@ -203,5 +189,12 @@ func initConfig() {
 			log.Fatalf("[FATAL] server: failed compile managed domain pattern: %q, %v", pattern, err)
 		}
 		Cfg.Managed[i].Regex = re
+	}
+}
+
+func setDefault(dst interface{}, value interface{}) {
+	dstVal := reflect.ValueOf(dst)
+	if reflect.Indirect(dstVal).IsZero() {
+		dstVal.Elem().Set(reflect.ValueOf(value))
 	}
 }

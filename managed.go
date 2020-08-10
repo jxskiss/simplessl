@@ -4,9 +4,24 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
+	"sync"
+	"sync/atomic"
+	"time"
+	"unsafe"
 )
 
-func (m *Manager) IsManagedDomain(domain string) (cert, privKey string, ok bool) {
+const reloadInterval = 300 // seconds
+
+var managedCache sync.Map
+
+type managedCert struct {
+	sync.Mutex
+	cert   unsafe.Pointer // *tls.Certificate
+	loadAt int64
+}
+
+func IsManagedDomain(domain string) (cert, privKey string, ok bool) {
 	for _, x := range Cfg.Managed {
 		if x.Regex.MatchString(domain) {
 			return x.Cert, x.PrivKey, true
@@ -15,7 +30,40 @@ func (m *Manager) IsManagedDomain(domain string) (cert, privKey string, ok bool)
 	return "", "", false
 }
 
-func (m *Manager) GetManagedCertificate(cert, privKey string) (*tls.Certificate, error) {
+func GetManagedCertificate(cert, privKey string) (*tls.Certificate, error) {
+	ckey := cert + "_" + privKey
+	cached, ok := managedCache.Load(ckey)
+	if ok {
+		mngCert := cached.(*managedCert)
+		tlscert := atomic.LoadPointer(&mngCert.cert)
+		if tlscert != nil {
+			if mngCert.loadAt > 0 &&
+				time.Now().Unix()-mngCert.loadAt > reloadInterval {
+				go reloadManagedCertificate(mngCert, cert, privKey)
+			}
+			return (*tls.Certificate)(tlscert), nil
+		}
+	}
+
+	// certificate not cached, lock and load from storage
+	cached, _ = managedCache.LoadOrStore(ckey, &managedCert{})
+	mngCert := cached.(*managedCert)
+	mngCert.Lock()
+	defer mngCert.Unlock()
+
+	if mngCert.cert != nil {
+		return (*tls.Certificate)(mngCert.cert), nil
+	}
+	tlscert, err := loadManagedCertificateFromStore(cert, privKey)
+	if err != nil {
+		return nil, err
+	}
+	atomic.StorePointer(&mngCert.cert, unsafe.Pointer(tlscert))
+	mngCert.loadAt = time.Now().Unix()
+	return tlscert, nil
+}
+
+func loadManagedCertificateFromStore(cert, privKey string) (*tls.Certificate, error) {
 	store := Cfg.Storage.Cache
 	ctx := context.Background()
 	certPEM, err := store.Get(ctx, cert)
@@ -31,4 +79,16 @@ func (m *Manager) GetManagedCertificate(cert, privKey string) (*tls.Certificate,
 		return nil, fmt.Errorf("managed: failed parse public/private key pair")
 	}
 	return &tlscert, nil
+}
+
+func reloadManagedCertificate(mngCert *managedCert, cert, privKey string) {
+	tlscert, err := loadManagedCertificateFromStore(cert, privKey)
+	if err != nil {
+		log.Printf("[WARN] managed: failed reload certificate: cert= %s, priv_key= %s", cert, privKey)
+		return
+	}
+	mngCert.Lock()
+	defer mngCert.Unlock()
+	atomic.StorePointer(&mngCert.cert, unsafe.Pointer(tlscert))
+	mngCert.loadAt = time.Now().Unix()
 }

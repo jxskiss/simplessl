@@ -113,19 +113,19 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 
 func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, certType int, err error) {
 	// check managed domains first
-	if cert, privKey, ok := m.IsManagedDomain(name); ok {
+	if cert, privKey, ok := IsManagedDomain(name); ok {
 		certType = Managed
-		tlscert, err = m.GetManagedCertificate(cert, privKey)
+		tlscert, err = GetManagedCertificate(cert, privKey)
 	} else
 	// check auto issued certificates from Let's Encrypt
 	if err := m.m.HostPolicy(context.Background(), name); err == nil {
 		certType = LetsEncrypt
-		tlscert, err = m.GetAutocertCertificate(name)
+		tlscert, err = m.GetCertificate(name)
 	} else
 	// check self-signed
-	if m.IsSelfSignedAllowed(name) {
+	if IsSelfSignedAllowed(name) {
 		certType = SelfSigned
-		tlscert, err = m.GetSelfSignedCertificate()
+		tlscert, err = GetSelfSignedCertificate()
 	} else
 	// host not allowed
 	{
@@ -133,6 +133,8 @@ func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, c
 	}
 	return
 }
+
+// TODO: http 204 RspNoValidOCSPStapling
 
 func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/ocsp/")
