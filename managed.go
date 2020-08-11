@@ -31,6 +31,20 @@ func IsManagedDomain(domain string) (cert, privKey string, ok bool) {
 }
 
 func GetManagedCertificate(cert, privKey string) (*tls.Certificate, error) {
+	tlscert, err := getManagedCertificate(cert, privKey)
+	if err != nil {
+		return nil, err
+	}
+
+	ocspKeyName := managedCertOCSPKeyName(cert, privKey)
+	OCSPManager.Watch(ocspKeyName, func() (*tls.Certificate, error) {
+		return getManagedCertificate(cert, privKey)
+	})
+
+	return tlscert, nil
+}
+
+func getManagedCertificate(cert, privKey string) (*tls.Certificate, error) {
 	ckey := cert + "_" + privKey
 	cached, ok := managedCache.Load(ckey)
 	if ok {
@@ -84,11 +98,15 @@ func loadManagedCertificateFromStore(cert, privKey string) (*tls.Certificate, er
 func reloadManagedCertificate(mngCert *managedCert, cert, privKey string) {
 	tlscert, err := loadManagedCertificateFromStore(cert, privKey)
 	if err != nil {
-		log.Printf("[WARN] managed: failed reload certificate: cert= %s, priv_key= %s", cert, privKey)
+		log.Printf("[WARN] managed: failed reload certificate: cert= %s priv_key= %s", cert, privKey)
 		return
 	}
 	mngCert.Lock()
 	defer mngCert.Unlock()
 	atomic.StorePointer(&mngCert.cert, unsafe.Pointer(tlscert))
 	mngCert.loadAt = time.Now().Unix()
+}
+
+func managedCertOCSPKeyName(cert, privKey string) string {
+	return fmt.Sprintf("managed|%s|%s", cert, privKey)
 }

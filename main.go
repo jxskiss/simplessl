@@ -41,7 +41,6 @@ func main() {
 		},
 		ForceRSA: Cfg.LetsEncrypt.ForceRSA,
 	}
-	go manager.listenCertChanges()
 
 	mux := http.NewServeMux()
 	buildRoutes(mux, manager)

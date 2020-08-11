@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+// TODO: leveled messages
+
 var accessLogger = log.New(os.Stdout, "", 0)
 
 type loggingResponseWriter struct {
