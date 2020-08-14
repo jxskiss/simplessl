@@ -28,6 +28,9 @@ type Options struct {
 	// the certificates asynchronously in background.
 	PreloadDomains []string
 	PreloadAsync   bool
+
+	// DisableStapling optionally disables OCSP stapling.
+	DisableStapling bool
 }
 
 func makeHostWhitelist(hosts ...string) func(string) error {

@@ -4,7 +4,7 @@ local ssl = require "ngx.ssl"
 local resty_lock = require "resty.lock"
 local resty_http = require "resty.http"
 
-local _M = { _VERSION = '0.3.0' }
+local _M = { _VERSION = '0.4.0' }
 
 function _M.new(options)
     options = options or {}
@@ -38,6 +38,33 @@ function _M.new(options)
     return setmetatable({ options = options }, { __index = _M })
 end
 
+local function serialize_cert(cert_type, fingerprint, cert_der)
+    local sep = "|"
+    local cert_b64 = ngx.encode_base64(cert_der)
+    return cert_type .. sep .. fingerprint .. sep .. cert_b64
+end
+
+local function deserialize_cert(buf)
+    local sep = "|"
+    local result = {}
+    local from, sep_idx = 1, 0
+    for _ = 1, 2 do
+        sep_idx = string.find(buf, sep, from)
+        if sep_idx == from then
+            table.insert(result, "")
+        else
+            table.insert(result, string.sub(buf, from, sep_idx - 1))
+        end
+        from = sep_idx + 1
+    end
+    table.insert(result, string.sub(buf, from))
+
+    local cert_type = tonumber(result[1])
+    local fingerprint = result[2]
+    local cert_der = ngx.decode_base64(result[3])
+    return cert_type, fingerprint, cert_der
+end
+
 local function _log_unlock(lock)
     local ok, lock_err = lock:unlock()
     if not ok then
@@ -60,7 +87,7 @@ local function _lock(key, opts)
 end
 
 local function _safe_set_cache(values)
-    local lock, lock_err = _lock("lock:_safe_set_cache", {exptime = 1, timeout = 1})
+    local lock, lock_err = _lock("lock:_safe_set_cache", { exptime = 1, timeout = 1 })
     if not lock then
         return false, lock_err
     end
@@ -99,7 +126,7 @@ local function safe_connect(self)
         end
     end
 
-    local lock, lock_err = _lock(lock_key, {exptime = 1, timeout = 1})
+    local lock, lock_err = _lock(lock_key, { exptime = 1, timeout = 1 })
     if not lock then
         return nil, lock_err
     end
@@ -125,13 +152,13 @@ local function safe_connect(self)
     local ok, conn_err = httpc:connect(self.options["backend_host"], self.options["backend_port"])
     if not ok then
         -- Block further connections to avoid slowing down nginx too much for busy website.
-        -- Connect to backend as soon as possible, no more than 5 minutes.
+        -- Connect to backend as soon as possible, no more than 2 minutes.
         if not sleep then
-            sleep = 2
+            sleep = 1
         else
             sleep = sleep * 2
-            if sleep > 300 then
-                sleep = 300
+            if sleep > 120 then
+                sleep = 120
             end
         end
         ngx.log(ngx.ERR, "backend in unhealthy state, block for ", sleep, " seconds")
@@ -163,7 +190,9 @@ local function make_request(self, opts, timeout, decode_json)
     local res, req_err = httpc:request(opts)
     local body, headers
     if res then
-        if res.status ~= 200 then
+        if res.status == 204 then
+            req_err = "204 no content"
+        elseif res.status ~= 200 then
             req_err = "bad HTTP status " .. res.status
         else
             headers = res.headers
@@ -202,7 +231,8 @@ local function request_cert(self, domain, timeout)
         return nil, nil, nil, nil, "failed to convert private key from PEM to DER: " .. (der_err or "nil")
     end
 
-    return cert_der, pkey_der, cert_json["ttl"], cert_json["expire_at"]
+    local cert = serialize_cert(cert_json["type"], cert_json["fingerprint"], cert_der)
+    return cert, pkey_der, cert_json["ttl"], cert_json["expire_at"]
 end
 
 local function get_cert(self, domain)
@@ -214,40 +244,41 @@ local function get_cert(self, domain)
     local lock_key = "lock:cert:" .. domain
     local lock_exptime = 120  -- seconds
 
+    local is_backup = false
     local cert, cache_err = cache:get(cert_key)
     if cache_err then
-        return nil, nil, "failed to get cert cache: " .. cache_err
+        return nil, nil, nil, "failed to get cert cache: " .. cache_err
     end
     local pkey, cache_err = cache:get(pkey_key)
     if cache_err then
-        return nil, nil, "failed to get pkey cache: " .. cache_err
+        return nil, nil, nil, "failed to get pkey cache: " .. cache_err
     end
     if (cert and pkey) then
-        return cert, pkey
+        return cert, pkey, is_backup
     end
 
     -- Lock to prevent multiple requests for same domain.
-    local lock, lock_err = _lock(lock_key, {exptime = lock_exptime, timeout = lock_exptime})
+    local lock, lock_err = _lock(lock_key, { exptime = lock_exptime, timeout = lock_exptime })
     if not lock then
-        return nil, nil, lock_err
+        return nil, nil, nil, lock_err
     end
 
     -- Check the cache again after holding the lock.
     cert, cache_err = cache:get(cert_key)
     if cache_err then
         _log_unlock(lock)
-        return nil, nil, "failed to get cert cache: " .. cache_err
+        return nil, nil, nil, "failed to get cert cache: " .. cache_err
     end
     pkey, cache_err = cache:get(pkey_key)
     if cache_err then
         _log_unlock(lock)
-        return nil, nil, "failed to get pkey cache: " .. cache_err
+        return nil, nil, nil, "failed to get pkey cache: " .. cache_err
     end
 
     -- Someone has already done the work.
     if (cert and pkey) then
         _log_unlock(lock)
-        return cert, pkey
+        return cert, pkey, is_backup
     end
 
     -- We are the first, request certificate from backend server.
@@ -256,10 +287,10 @@ local function get_cert(self, domain)
         -- Cache the newly requested certificate as long living backup and short-living cache.
         -- Backup cert (even expired) is preferred than self-signed if backend server is not available.
         local ok, cache_err = _safe_set_cache({
-            [ bak_cert_key ] = { cert },
-            [ bak_pkey_key ] = { pkey },
-            [ cert_key ] = { cert, ttl },
-            [ pkey_key ] = { pkey, ttl }
+            [bak_cert_key] = { cert },
+            [bak_pkey_key] = { pkey },
+            [cert_key] = { cert, ttl },
+            [pkey_key] = { pkey, ttl }
         })
         if not ok then
             ngx.log(ngx.ERR, cache_err)
@@ -271,6 +302,7 @@ local function get_cert(self, domain)
         -- requests to backend, which may slow down nginx and rise up pressure on busy site.
         -- Also we consider an recently-expired certificate is more friendly to our users
         -- than fallback to self-signed certificate.
+        is_backup = true
         cert, cache_err = cache:get(bak_cert_key)
         if cache_err then
             ngx.log(ngx.ERR, "failed to get backup cert cache: ", cache_err)
@@ -286,9 +318,9 @@ local function get_cert(self, domain)
     _log_unlock(lock)
 
     if not (cert and pkey) then
-        return nil, nil, req_err
+        return nil, nil, nil, req_err
     end
-    return cert, pkey
+    return cert, pkey, is_backup
 end
 
 local function set_cert(self, cert_der, pkey_der)
@@ -315,11 +347,12 @@ local function set_cert(self, cert_der, pkey_der)
     return true
 end
 
-local function request_stapling(self, domain, timeout)
+local function request_stapling(self, domain, fingerprint, timeout)
     -- Get OCSP stapling from backend cert server.
-    local stapling, headers, req_err = make_request(self, { path = "/ocsp/" .. domain }, timeout, false)
+    local path = "/ocsp/" .. domain .. "?fp=" .. fingerprint
+    local stapling, headers, req_err = make_request(self, { path = path }, timeout, false)
     if req_err then
-        return nil, nil, nil, err
+        return nil, nil, nil, req_err
     end
 
     -- Parse TTL from response header, default 10 minutes if absent for any reason.
@@ -328,10 +361,10 @@ local function request_stapling(self, domain, timeout)
     return stapling, ttl, expire_at
 end
 
-local function get_stapling(self, domain)
+local function get_stapling(self, domain, fingerprint)
     local cache = ngx.shared.ssl_certs_cache
-    local bak_stapling_key = "stapling:" .. domain
-    local stapling_key = "stapling:" .. domain .. ":latest"
+    local stapling_key = "stapling:" .. domain .. ":" .. fingerprint
+    local bak_stapling_key = stapling_key .. ":backup"
     local lock_key = "lock:stapling:" .. domain
     local lock_exptime = 10  -- seconds
 
@@ -344,7 +377,7 @@ local function get_stapling(self, domain)
     end
 
     -- Lock to prevent multiple requests for same domain.
-    local lock, lock_err = _lock(lock_key, {exptime = lock_exptime, timeout = lock_exptime})
+    local lock, lock_err = _lock(lock_key, { exptime = lock_exptime, timeout = lock_exptime })
     if not lock then
         return nil, lock_err
     end
@@ -361,7 +394,7 @@ local function get_stapling(self, domain)
     end
 
     -- We are the first, request and cache OCSP stapling from backend server.
-    local stapling, ttl, expire_at, req_err = request_stapling(self, domain, lock_exptime - 2)
+    local stapling, ttl, expire_at, req_err = request_stapling(self, domain, fingerprint, lock_exptime - 2)
     if stapling then
         -- Consider time deviation, expire the backup 10 seconds before expiration.
         local backup_ttl = expire_at - ngx.time() - 10
@@ -415,9 +448,16 @@ function _M.ssl_certificate(self)
         return
     end
 
-    local cert, pkey, err = get_cert(self, domain)
+    local cert, pkey, is_backup, err = get_cert(self, domain)
+    local has_stapling = false
+    local cert_type, fingerprint, cert_der
     if (cert and pkey) then
-        local ok, err = set_cert(self, cert, pkey)
+        cert_type, fingerprint, cert_der = deserialize_cert(cert)
+        if (not is_backup) and cert_type < 100 then
+            has_stapling = true
+        end
+
+        local ok, err = set_cert(self, cert_der, pkey)
         if not ok then
             ngx.log(ngx.ERR, domain, ": ", err)
             return
@@ -427,18 +467,18 @@ function _M.ssl_certificate(self)
         return
     end
 
-    -- TODO: check whether OCSP servers available
-
-    local stapling, err = get_stapling(self, domain)
-    if stapling then
-        local ok, err = set_stapling(self, stapling)
-        if not ok then
-            ngx.log(ngx.ERR, domain, ": ", err)
+    if (not self.options["disable_stapling"]) and has_stapling then
+        local stapling, err = get_stapling(self, domain, fingerprint)
+        if stapling then
+            local ok, err = set_stapling(self, stapling)
+            if not ok then
+                ngx.log(ngx.ERR, domain, ": ", err)
+                return
+            end
+        else
+            ngx.log(ngx.NOTICE, domain, ": ", err)
             return
         end
-    else
-        ngx.log(ngx.ERR, domain, ": ", err)
-        return
     end
 end
 

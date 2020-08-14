@@ -18,14 +18,16 @@ import (
 	"golang.org/x/net/idna"
 )
 
-type cacheItem struct {
-	cert *tls.Certificate
+type cacheCertificate struct {
+	cert        *tls.Certificate
+	certType    int
+	fingerprint string
 
-	certRefresh int64
 	certExpire  int64
+	certRefresh int64
 
-	staplingRefresh int64
 	staplingExpire  int64
+	staplingRefresh int64
 }
 
 type Client struct {
@@ -98,20 +100,22 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 	cacheVal, ok := c.cache.Load(cacheKey)
 	if ok {
 		now := time.Now().Unix()
-		cached := cacheVal.(*cacheItem)
-		// in case the cached OCSP stapling is expired, abandon it
-		if cached.staplingExpire > 0 && cached.staplingExpire <= now {
+		cached := cacheVal.(*cacheCertificate)
+		// in case the cached OCSP stapling is going to expired, abandon it
+		if cached.staplingExpire > 0 && cached.staplingExpire <= now-60 {
 			newCert := *cached.cert
 			newCert.OCSPStaple = nil
-			newCacheItem := &cacheItem{
+			newCacheCert := &cacheCertificate{
 				cert:            &newCert,
-				certRefresh:     cached.certRefresh,
+				certType:        cached.certType,
+				fingerprint:     cached.fingerprint,
 				certExpire:      cached.certExpire,
-				staplingRefresh: 0,
+				certRefresh:     cached.certRefresh,
 				staplingExpire:  0,
+				staplingRefresh: 0,
 			}
-			c.cache.Store(cacheKey, newCacheItem)
-			cached = newCacheItem
+			c.cache.Store(cacheKey, newCacheCert)
+			cached = newCacheCert
 		}
 		return cached.cert, nil
 	}
@@ -120,7 +124,7 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cert, certExpire, certRefresh, err := c.requestCertificate(ctx, domainName)
+	respCert, err := c.requestCertificate(ctx, domainName)
 	if err != nil {
 		return nil, err
 	}
@@ -130,33 +134,32 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 	// in case of OCSP stapling unavailable.
 	var stapling []byte
 	var staplingRefresh, staplingExpire int64
-	if len(cert.Leaf.OCSPServer) > 0 {
-		stapling, staplingExpire, staplingRefresh, err = c.requestStapling(ctx, domainName)
-		if err != nil {
-			log.Printf("[WARN] tlsconfig: failed request OCSP stapling: domain= %s err= %v", domainName, err)
+	if !c.opts.DisableStapling {
+		if hasStapling(respCert.certType) && len(respCert.cert.Leaf.OCSPServer) > 0 {
+			stapling, staplingExpire, staplingRefresh, err = c.requestStapling(ctx, domainName, respCert.fingerprint)
+			if err != nil {
+				log.Printf("[WARN] tlsconfig: failed request OCSP stapling: domain= %s err= %v", domainName, err)
+			}
 		}
 	}
 
-	cert.OCSPStaple = stapling
-	cacheItem := &cacheItem{
-		cert:            cert,
-		certRefresh:     certRefresh,
-		certExpire:      certExpire,
-		staplingRefresh: staplingRefresh,
-		staplingExpire:  staplingExpire,
-	}
-	c.cache.Store(cacheKey, cacheItem)
-	return cacheItem.cert, nil
+	respCert.cert.OCSPStaple = stapling
+	respCert.staplingExpire = staplingExpire
+	respCert.staplingRefresh = staplingRefresh
+	c.cache.Store(cacheKey, respCert)
+	return respCert.cert, nil
 }
 
 func (c *Client) requestCertificate(ctx context.Context, domainName string) (
-	certificate *tls.Certificate, expireAt, refreshAt int64, err error,
+	cacheCert *cacheCertificate, err error,
 ) {
 	var response struct {
-		Cert     string `json:"cert"`
-		PKey     string `json:"pkey"`
-		ExpireAt int64  `json:"expire_at"` // seconds since epoch
-		TTL      int64  `json:"ttl"`       // in seconds
+		Type        int    `json:"type"`
+		Cert        string `json:"cert"`
+		PKey        string `json:"pkey"`
+		Fingerprint string `json:"fingerprint"`
+		ExpireAt    int64  `json:"expire_at"` // seconds since epoch
+		TTL         int64  `json:"ttl"`       // in seconds
 	}
 
 	apiPath := c.serverHost + "/cert/" + domainName
@@ -188,16 +191,20 @@ func (c *Client) requestCertificate(ctx context.Context, domainName string) (
 	}
 	cert.Leaf = leaf
 
-	certificate = &cert
-	expireAt = response.ExpireAt
-	refreshAt = time.Now().Unix() + response.TTL
+	cacheCert = &cacheCertificate{
+		cert:        &cert,
+		certType:    response.Type,
+		fingerprint: response.Fingerprint,
+		certExpire:  response.ExpireAt,
+		certRefresh: time.Now().Unix() + response.TTL,
+	}
 	return
 }
 
-func (c *Client) requestStapling(ctx context.Context, domainName string) (
+func (c *Client) requestStapling(ctx context.Context, domainName string, fingerprint string) (
 	stapling []byte, expireAt, refreshAt int64, err error,
 ) {
-	apiPath := c.serverHost + "/ocsp/" + domainName
+	apiPath := c.serverHost + "/ocsp/" + domainName + "?fp=" + fingerprint
 	req, err := http.NewRequestWithContext(ctx, "GET", apiPath, nil)
 	if err != nil {
 		return
@@ -208,6 +215,9 @@ func (c *Client) requestStapling(ctx context.Context, domainName string) (
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == 204 {
+		return
+	}
 	if resp.StatusCode != 200 {
 		err = fmt.Errorf("bad http status %d", resp.StatusCode)
 		return
@@ -229,9 +239,9 @@ func (c *Client) watch() {
 
 		// in case of error, retry 2 times with one second interval
 		for i := 0; i < 3; i++ {
-			cached := make(map[string]*cacheItem)
+			cached := make(map[string]*cacheCertificate)
 			c.cache.Range(func(k, v interface{}) bool {
-				cached[k.(string)] = v.(*cacheItem)
+				cached[k.(string)] = v.(*cacheCertificate)
 				return true
 			})
 			err := c.refresh(cached)
@@ -243,7 +253,7 @@ func (c *Client) watch() {
 	}
 }
 
-func (c *Client) refresh(cached map[string]*cacheItem) error {
+func (c *Client) refresh(cached map[string]*cacheCertificate) error {
 
 	var certErr error
 	var staplingErr error
@@ -261,7 +271,7 @@ func (c *Client) refresh(cached map[string]*cacheItem) error {
 		// we may change the OCSPStaple below
 		cert := *citem.cert
 
-		newCacheItem := &cacheItem{
+		newCacheCert := &cacheCertificate{
 			cert:            &cert,
 			certRefresh:     citem.certRefresh,
 			certExpire:      citem.certExpire,
@@ -270,45 +280,54 @@ func (c *Client) refresh(cached map[string]*cacheItem) error {
 		}
 
 		ctx, cancel := context.WithTimeout(bgctx, time.Second)
-		if newCacheItem.certRefresh <= now {
-			newCert, expireAt, refreshAt, err := c.requestCertificate(ctx, domainName)
+		if newCacheCert.certRefresh <= now {
+			respCert, err := c.requestCertificate(ctx, domainName)
 			if err != nil {
 				log.Printf("[WARN] tlsconfig: failed refresh certificate: domain= %s err= %v", domainName, err)
 				if certErr == nil {
 					certErr = err
 				}
 			} else {
-				newCacheItem.cert = newCert
-				newCacheItem.certRefresh = refreshAt
-				newCacheItem.certExpire = expireAt
+				newCacheCert.cert = respCert.cert
+				newCacheCert.certType = respCert.certType
+				newCacheCert.fingerprint = respCert.fingerprint
+				newCacheCert.certExpire = respCert.certExpire
+				newCacheCert.certRefresh = respCert.certRefresh
 			}
 		}
-		if newCacheItem.staplingRefresh <= now {
-			newStapling, expireAt, refreshAt, err := c.requestStapling(ctx, domainName)
+		if !c.opts.DisableStapling &&
+			hasStapling(newCacheCert.certType) &&
+			len(newCacheCert.cert.Leaf.OCSPServer) > 0 &&
+			newCacheCert.staplingRefresh <= now {
+			newStapling, expireAt, refreshAt, err := c.requestStapling(ctx, domainName, newCacheCert.fingerprint)
 			if err != nil {
 				log.Printf("[WARN] tlsconfig: failed refresh OCSP stapling: domain= %s err= %v", domainName, err)
 				if staplingErr == nil {
 					staplingErr = err
 				}
 				// if the stapling is going to expire, abandon it
-				if newCacheItem.staplingExpire-now < 120 {
-					newCacheItem.cert.OCSPStaple = nil
-					newCacheItem.staplingRefresh = 0
-					newCacheItem.staplingExpire = 0
+				if newCacheCert.staplingExpire-now < 120 {
+					newCacheCert.cert.OCSPStaple = nil
+					newCacheCert.staplingExpire = 0
+					newCacheCert.staplingRefresh = 0
 				}
 			} else {
-				newCacheItem.cert.OCSPStaple = newStapling
-				newCacheItem.staplingRefresh = refreshAt
-				newCacheItem.staplingExpire = expireAt
+				newCacheCert.cert.OCSPStaple = newStapling
+				newCacheCert.staplingExpire = expireAt
+				newCacheCert.staplingRefresh = refreshAt
 			}
 		}
 		cancel()
 
-		c.cache.Store(domainName, newCacheItem)
+		c.cache.Store(domainName, newCacheCert)
 	}
 
 	if certErr != nil {
 		return certErr
 	}
 	return staplingErr
+}
+
+func hasStapling(certType int) bool {
+	return certType < 100
 }

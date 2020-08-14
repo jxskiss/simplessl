@@ -26,13 +26,13 @@ const (
 
 var (
 	ErrStaplingNotCached = errors.New("OCSP stapling is not cached")
-	ErrCertfuncNotFound  = errors.New("certificate func not found") // TODO: check this error
+	ErrCertfuncNotFound  = errors.New("certificate func not found")
 )
 
 var OCSPManager = &ocspManager{}
 
 func init() {
-	OCSPManager.certKeys.Store(make(map[string]func() (*tls.Certificate, error)))
+	OCSPManager.certMap.Store(make(map[string]func() (*tls.Certificate, error)))
 	OCSPManager.stateMap = make(map[string]*ocspState)
 	OCSPManager.stateToken = make(map[string]struct{})
 	go OCSPManager.listenCertChanges()
@@ -40,8 +40,8 @@ func init() {
 
 type ocspManager struct {
 	// copy-on-write map
-	certMu   sync.Mutex
-	certKeys atomic.Value // map[string]func() (*tls.Certificate, error)
+	certMu  sync.Mutex
+	certMap atomic.Value // map[string]func() (*tls.Certificate, error)
 
 	stateMu    sync.RWMutex
 	stateMap   map[string]*ocspState
@@ -59,10 +59,8 @@ func (m *ocspManager) GetOCSPStapling(keyName string, fingerprint string) ([]byt
 		}
 	}
 
-	log.Printf("[INFO] ocsp manager: OCSP stapling not cached: key_name= %v", keyName)
-	go m.touchState(keyName)
-
 	// don't block request
+	log.Printf("[INFO] ocsp manager: OCSP stapling not cached: key_name= %v", keyName)
 	return nil, time.Time{}, ErrStaplingNotCached
 }
 
@@ -71,14 +69,14 @@ func (m *ocspManager) Watch(keyName string, certfunc func() (*tls.Certificate, e
 	if certMap[keyName] != nil {
 		return
 	}
-	go m.cowCertMap(keyName, certfunc)
+	go m.watchNewCert(keyName, certfunc)
 }
 
 func (m *ocspManager) getCertMap() map[string]func() (*tls.Certificate, error) {
-	return m.certKeys.Load().(map[string]func() (*tls.Certificate, error))
+	return m.certMap.Load().(map[string]func() (*tls.Certificate, error))
 }
 
-func (m *ocspManager) cowCertMap(keyName string, certfunc func() (*tls.Certificate, error)) {
+func (m *ocspManager) watchNewCert(keyName string, certfunc func() (*tls.Certificate, error)) {
 	m.certMu.Lock()
 	defer m.certMu.Unlock()
 	oldCertMap := m.getCertMap()
@@ -87,7 +85,9 @@ func (m *ocspManager) cowCertMap(keyName string, certfunc func() (*tls.Certifica
 		newCertMap[k] = f
 	}
 	newCertMap[keyName] = certfunc
-	m.certKeys.Store(newCertMap)
+	m.certMap.Store(newCertMap)
+
+	go m.touchState(keyName)
 }
 
 func (m *ocspManager) getCertificate(keyName string) (*tls.Certificate, error) {
