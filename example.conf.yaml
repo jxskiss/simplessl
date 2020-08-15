@@ -9,11 +9,9 @@ storage:
 
 managed:
   - pattern: "abc\\.example\\.com"
-    cert: "abc.example.com.cert"
-    priv_key: "abc.example.com.key"
+    cert_key: "abc.example.com"
   - pattern: "(\\w+)\\.example\\.com"
-    cert: "wildcard_example_com.cert"
-    priv_key: "wildcard_example_com.key"
+    cert_key: "wildcard_example_com"
 
 lets_encrypt:
   staging: false
@@ -33,5 +31,4 @@ self_signed:
   valid_days: 3650
   organization:
     - "SSL Cert Server Self-Signed"
-  cert: "self_signed.cert"
-  priv_key: "self_signed.key"
+  cert_key: "self_signed"

@@ -45,8 +45,7 @@ type config struct {
 
 	Managed []struct {
 		Pattern string `yaml:"pattern"`
-		Cert    string `yaml:"cert"`
-		PrivKey string `yaml:"priv_key"`
+		CertKey string `yaml:"cert_key"`
 
 		Regex *regexp.Regexp `yaml:"-"`
 	} `yaml:"managed"`
@@ -76,8 +75,7 @@ type config struct {
 		CheckSNI     bool     `yaml:"check_sni"`    // default: false
 		ValidDays    int      `yaml:"valid_days"`   // default: 365
 		Organization []string `yaml:"organization"` // default: ["SSL Cert Server Self-Signed"]
-		Cert         string   `yaml:"cert"`         // default: "self_signed.cert"
-		PrivKey      string   `yaml:"priv_key"`     // default: "self_signed.key"
+		CertKey      string   `yaml:"cert_key"`     // default: "self_signed"
 	} `yaml:"self_signed"`
 }
 
@@ -97,8 +95,7 @@ func (p *config) setupDefaultOptions() {
 	}
 
 	setDefault(&Cfg.SelfSigned.ValidDays, 365)
-	setDefault(&Cfg.SelfSigned.Cert, "self_signed.cert")
-	setDefault(&Cfg.SelfSigned.PrivKey, "self_signed.key")
+	setDefault(&Cfg.SelfSigned.CertKey, "self_signed")
 	if len(Cfg.SelfSigned.Organization) == 0 {
 		Cfg.SelfSigned.Organization = defaultSelfSignedOrganization
 	}

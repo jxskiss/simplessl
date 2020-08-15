@@ -133,9 +133,9 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 
 func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, certType int, err error) {
 	// check managed domains first
-	if cert, privKey, ok := IsManagedDomain(name); ok {
+	if certKey, ok := IsManagedDomain(name); ok {
 		certType = Managed
-		tlscert, err = GetManagedCertificate(cert, privKey)
+		tlscert, err = GetManagedCertificate(certKey)
 	} else
 	// check auto issued certificates from Let's Encrypt
 	if err = m.m.HostPolicy(context.Background(), name); err == nil {
@@ -196,8 +196,8 @@ func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 func (m *Manager) GetOCSPStaplingByName(name string, fingerprint string) ([]byte, time.Time, error) {
 	var keyName string
 	// check managed domains first
-	if cert, privKey, ok := IsManagedDomain(name); ok {
-		keyName = managedCertOCSPKeyName(cert, privKey)
+	if certKey, ok := IsManagedDomain(name); ok {
+		keyName = managedCertOCSPKeyName(certKey)
 	} else
 	// check auto issued certificates from Let's Encrypt
 	if err := m.m.HostPolicy(context.Background(), name); err == nil {

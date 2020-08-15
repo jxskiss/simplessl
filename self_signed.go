@@ -54,31 +54,17 @@ func GetSelfSignedCertificate() (*tls.Certificate, error) {
 	}
 
 	// check storage first
-	store := Cfg.Storage.Cache
-	ctx := context.Background()
-	certPEM, err := store.Get(ctx, Cfg.SelfSigned.Cert)
+	tlscert, err := loadCertificateFromStore(Cfg.SelfSigned.CertKey)
 	if err != nil && err != autocert.ErrCacheMiss {
-		return nil, err
+		return nil, fmt.Errorf("self_signed: %v", err)
 	}
-	privKeyPEM, err := store.Get(ctx, Cfg.SelfSigned.PrivKey)
-	if err != nil && err != autocert.ErrCacheMiss {
-		return nil, err
-	}
-	if certPEM != nil && privKeyPEM != nil {
-		tlscert, err := tls.X509KeyPair(certPEM, privKeyPEM)
-		if err != nil {
-			return nil, err
-		}
-		tlscert.Leaf, err = x509.ParseCertificate(tlscert.Certificate[0])
-		if err != nil {
-			return nil, err
-		}
+	if tlscert != nil {
 		selfSignedCert.Store(tlscert)
-		return &tlscert, nil
+		return tlscert, nil
 	}
 
 	// cache not available, create new certificate
-	tlscert, err := createAndSaveSelfSignedCertificate()
+	tlscert, err = createAndSaveSelfSignedCertificate()
 	if err != nil {
 		return nil, err
 	}
@@ -94,19 +80,13 @@ func createAndSaveSelfSignedCertificate() (*tls.Certificate, error) {
 		return nil, err
 	}
 
-	store := Cfg.Storage.Cache
-	ctx := context.Background()
-	err = store.Put(ctx, Cfg.SelfSigned.Cert, certPEM)
+	cacheData := append(privKeyPEM, certPEM...)
+	err = Cfg.Storage.Cache.Put(context.Background(), Cfg.SelfSigned.CertKey, cacheData)
 	if err != nil {
 		return nil, fmt.Errorf("self_signed: failed put certificate: %v", err)
 	}
-	err = store.Put(ctx, Cfg.SelfSigned.PrivKey, privKeyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("self_signed: failed put private key: %v", err)
-	}
-	tlscert, _ := tls.X509KeyPair(certPEM, privKeyPEM)
-	tlscert.Leaf, _ = x509.ParseCertificate(tlscert.Certificate[0])
-	return &tlscert, nil
+	tlscert, _ := parseCertificate(cacheData)
+	return tlscert, nil
 }
 
 func createSelfSignedCertificate(validDays int, organization []string) (certPEM, privKeyPEM []byte, err error) {
@@ -162,6 +142,7 @@ const generateSelfSignedCertSubCommand = "generate-self-signed"
 var generateSelfSignedCertFlagSet = flag.NewFlagSet(generateSelfSignedCertSubCommand, flag.ExitOnError)
 var generateSelfSignedCertOptions = struct {
 	validDays    int
+	out          string
 	certOut      string
 	keyOut       string
 	organization StringArray
@@ -171,6 +152,8 @@ func init() {
 	cmdFlags := generateSelfSignedCertFlagSet
 	cmdFlags.IntVar(&generateSelfSignedCertOptions.validDays,
 		"valid-days", 365, "number of days the cert is valid for")
+	cmdFlags.StringVar(&generateSelfSignedCertOptions.out,
+		"out", "./self_signed", "output single file contains both private key and certificate")
 	cmdFlags.StringVar(&generateSelfSignedCertOptions.certOut,
 		"cert-out", "./self_signed.cert", "output certificate file")
 	cmdFlags.StringVar(&generateSelfSignedCertOptions.keyOut,
@@ -190,12 +173,15 @@ func cmdGenerateSelfSignedCertificate() {
 	if err != nil {
 		log.Fatalf("[FATAL] %v", err)
 	}
-	err = ioutil.WriteFile(opts.certOut, certPEM, 0644)
-	if err != nil {
-		log.Fatalf("[FATAL] self_signed: failed write certificate file: %v", err)
-	}
 	err = ioutil.WriteFile(opts.keyOut, privKeyPEM, 0644)
+	if err == nil {
+		err = ioutil.WriteFile(opts.certOut, certPEM, 0644)
+	}
+	if err == nil {
+		outData := append(privKeyPEM, certPEM...)
+		err = ioutil.WriteFile(opts.out, outData, 0644)
+	}
 	if err != nil {
-		log.Fatalf("[FATAL] self_signed: failed write private keey file: %v", err)
+		log.Fatalf("[FATAL] self_signed: failed write certificate files: %v", err)
 	}
 }

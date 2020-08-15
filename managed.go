@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"log"
 	"sync"
@@ -22,46 +20,45 @@ type managedCert struct {
 	loadAt int64
 }
 
-func IsManagedDomain(domain string) (cert, privKey string, ok bool) {
+func IsManagedDomain(domain string) (certKey string, ok bool) {
 	for _, x := range Cfg.Managed {
 		if x.Regex.MatchString(domain) {
-			return x.Cert, x.PrivKey, true
+			return x.CertKey, true
 		}
 	}
-	return "", "", false
+	return "", false
 }
 
-func GetManagedCertificate(cert, privKey string) (*tls.Certificate, error) {
-	tlscert, err := getManagedCertificate(cert, privKey)
+func GetManagedCertificate(certKey string) (*tls.Certificate, error) {
+	tlscert, err := getManagedCertificate(certKey)
 	if err != nil {
 		return nil, err
 	}
 
-	ocspKeyName := managedCertOCSPKeyName(cert, privKey)
+	ocspKeyName := managedCertOCSPKeyName(certKey)
 	OCSPManager.Watch(ocspKeyName, func() (*tls.Certificate, error) {
-		return getManagedCertificate(cert, privKey)
+		return getManagedCertificate(certKey)
 	})
 
 	return tlscert, nil
 }
 
-func getManagedCertificate(cert, privKey string) (*tls.Certificate, error) {
-	ckey := cert + "_" + privKey
-	cached, ok := managedCache.Load(ckey)
+func getManagedCertificate(certKey string) (*tls.Certificate, error) {
+	cached, ok := managedCache.Load(certKey)
 	if ok {
 		mngCert := cached.(*managedCert)
 		tlscert := atomic.LoadPointer(&mngCert.cert)
 		if tlscert != nil {
 			if mngCert.loadAt > 0 &&
 				time.Now().Unix()-mngCert.loadAt > reloadInterval {
-				go reloadManagedCertificate(mngCert, cert, privKey)
+				go reloadManagedCertificate(mngCert, certKey)
 			}
 			return (*tls.Certificate)(tlscert), nil
 		}
 	}
 
 	// certificate not cached, lock and load from storage
-	cached, _ = managedCache.LoadOrStore(ckey, &managedCert{})
+	cached, _ = managedCache.LoadOrStore(certKey, &managedCert{})
 	mngCert := cached.(*managedCert)
 	mngCert.Lock()
 	defer mngCert.Unlock()
@@ -69,42 +66,19 @@ func getManagedCertificate(cert, privKey string) (*tls.Certificate, error) {
 	if mngCert.cert != nil {
 		return (*tls.Certificate)(mngCert.cert), nil
 	}
-	tlscert, err := loadManagedCertificateFromStore(cert, privKey)
+	tlscert, err := loadCertificateFromStore(certKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("managed: %v", err)
 	}
 	atomic.StorePointer(&mngCert.cert, unsafe.Pointer(tlscert))
 	mngCert.loadAt = time.Now().Unix()
 	return tlscert, nil
 }
 
-func loadManagedCertificateFromStore(cert, privKey string) (*tls.Certificate, error) {
-	store := Cfg.Storage.Cache
-	ctx := context.Background()
-	certPEM, err := store.Get(ctx, cert)
+func reloadManagedCertificate(mngCert *managedCert, certKey string) {
+	tlscert, err := loadCertificateFromStore(certKey)
 	if err != nil {
-		return nil, fmt.Errorf("managed: failed get certificate from %s: %v", cert, err)
-	}
-	privKeyPEM, err := store.Get(ctx, privKey)
-	if err != nil {
-		return nil, fmt.Errorf("managed: failed get private key from %s: %v", privKey, err)
-	}
-	tlscert, err := tls.X509KeyPair(certPEM, privKeyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("managed: failed parse public/private key pair: %v", err)
-	}
-	leaf, err := x509.ParseCertificate(tlscert.Certificate[0])
-	if err != nil {
-		return nil, fmt.Errorf("managed: failed parse x509 certificate: %v", err)
-	}
-	tlscert.Leaf = leaf
-	return &tlscert, nil
-}
-
-func reloadManagedCertificate(mngCert *managedCert, cert, privKey string) {
-	tlscert, err := loadManagedCertificateFromStore(cert, privKey)
-	if err != nil {
-		log.Printf("[WARN] managed: failed reload certificate: cert= %s priv_key= %s", cert, privKey)
+		log.Printf("[WARN] managed: failed reload certificate: cert_key= %s err= %v", certKey, err)
 		return
 	}
 	mngCert.Lock()
@@ -113,6 +87,6 @@ func reloadManagedCertificate(mngCert *managedCert, cert, privKey string) {
 	mngCert.loadAt = time.Now().Unix()
 }
 
-func managedCertOCSPKeyName(cert, privKey string) string {
-	return fmt.Sprintf("managed|%s|%s", cert, privKey)
+func managedCertOCSPKeyName(certKey string) string {
+	return fmt.Sprintf("managed|%s", certKey)
 }
