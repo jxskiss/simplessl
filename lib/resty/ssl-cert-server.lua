@@ -503,8 +503,11 @@ end
 
 local function get_from_lru_cache(domain)
     local cert_key = "cert:" .. domain
-    local stapling_key = "stapling:" .. domain
     local cert = lru_cache:get(cert_key)
+    if not cert then
+        return
+    end
+    local stapling_key = "stapling:" .. domain .. ":" .. cert.fingerprint
     local stapling = lru_cache:get(stapling_key)
     return cert, stapling
 end
@@ -517,8 +520,8 @@ local function set_cert_to_lru_cache(domain, cert)
     end
 end
 
-local function set_stapling_to_lru_cache(domain, stapling)
-    local stapling_key = "stapling:" .. domain
+local function set_stapling_to_lru_cache(domain, fingerprint, stapling)
+    local stapling_key = "stapling:" .. domain .. ":" .. fingerprint
     lru_cache:set(stapling_key, stapling)
 end
 
@@ -565,7 +568,7 @@ function _M.ssl_certificate(self)
     if not stapling then
         stapling, err = get_stapling(self, domain, cert.fingerprint)
         if stapling then
-            set_stapling_to_lru_cache(domain, stapling)
+            set_stapling_to_lru_cache(domain, cert.fingerprint, stapling)
         end
     end
     if stapling then

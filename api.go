@@ -10,12 +10,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"golang.org/x/net/idna"
 )
 
 // certificate types
@@ -46,14 +47,14 @@ func buildRoutes(mux *http.ServeMux, manager *Manager) {
 //
 // Possible responses are:
 // - 200 with the certificate data as response
-// - 400 which indicates there is error in the client request,
-//       in such case, the body will be filled with the error message
-// - 403 the requested domain name is not permitted
+// - 400 the requested domain name is invalid or not permitted
 // - 500 which indicates the server failed to process the request,
 //       in such case, the body will be filled with the error message
 func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/cert/")
-	if err := m.checkDomainName(domain); err != nil {
+	domain, err := idna.Lookup.ToASCII(domain)
+	if err != nil {
+		log.Printf("[INFO] manager: got invalid domain name: err= %v", err)
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write(RspInvalidDomainName)
 		return
@@ -61,8 +62,8 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	cert, certType, err := m.GetCertificateByName(domain)
 	if err != nil {
 		if err == ErrHostNotPermitted {
-			log.Printf("[WARN] manager: domain name not permitted: domain= %s", domain)
-			w.WriteHeader(http.StatusForbidden)
+			log.Printf("[INFO] manager: domain name not permitted: domain= %s", domain)
+			w.WriteHeader(http.StatusBadRequest)
 			w.Write(RspHostNotPermitted)
 		} else {
 			log.Printf("[ERROR] manager: failed get certificate: domain= %s err= %v", domain, err)
@@ -137,7 +138,7 @@ func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, c
 		tlscert, err = GetManagedCertificate(cert, privKey)
 	} else
 	// check auto issued certificates from Let's Encrypt
-	if err := m.m.HostPolicy(context.Background(), name); err == nil {
+	if err = m.m.HostPolicy(context.Background(), name); err == nil {
 		certType = LetsEncrypt
 		tlscert, err = m.GetCertificate(name)
 	} else
@@ -159,13 +160,16 @@ func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, c
 // - 200 with the OCSP response as body
 // - 204 without body, which indicates OCSP stapling for the requested domain
 //       is not available, temporarily or permanently
-// - 400 which indicates there is error in the client request,
-//       in such case, the body will be filled with the error message
+// - 400 which indicates the requested domain name is invalid or not permitted
 func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/ocsp/")
-	if err := m.checkDomainName(domain); err != nil {
+	domain, err := idna.Lookup.ToASCII(domain)
+	if err == nil {
+		err = checkHostIsValid(context.Background(), domain)
+	}
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write(RspInvalidDomainName)
+		w.Write(RspHostNotPermitted)
 		return
 	}
 	fingerprint := r.URL.Query().Get("fp")
@@ -223,17 +227,4 @@ func (m *Manager) limitTTL(ttl time.Duration) int {
 		ttlSeconds -= n
 	}
 	return int(ttlSeconds)
-}
-
-func (m *Manager) checkDomainName(name string) error {
-	if name == "" {
-		return errors.New("missing domain name")
-	}
-	if !strings.Contains(strings.Trim(name, "."), ".") {
-		return errors.New("domain name component invalid")
-	}
-	if strings.ContainsAny(name, `/\`) {
-		return errors.New("domain name contains invalid character")
-	}
-	return nil
 }

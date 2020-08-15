@@ -60,15 +60,20 @@ type config struct {
 		REPatterns  []string `yaml:"re_patterns"`
 
 		// HostPolicy is built from DomainList and PatternList.
+		// By default, any valid domain name is allowed if neither
+		// domain list nor regex pattern list provided. In such case,
+		// all requests will go to Let's Encrypt, and the following self_signed
+		// configuration will not take effect.
 		HostPolicy autocert.HostPolicy `yaml:"-"`
 
-		// DirectoryURL will be set to staging api if option Staging is true,
-		// else it will be Let's Encrypt production api.
+		// DirectoryURL will be set to Let's Encrypt staging api if the
+		// option Staging is true, else it will be the production api.
 		DirectoryURL string `yaml:"-"`
 	} `yaml:"lets_encrypt"`
 
 	SelfSigned struct {
 		Enable       bool     `yaml:"enable"`       // default: false
+		CheckSNI     bool     `yaml:"check_sni"`    // default: false
 		ValidDays    int      `yaml:"valid_days"`   // default: 365
 		Organization []string `yaml:"organization"` // default: ["SSL Cert Server Self-Signed"]
 		Cert         string   `yaml:"cert"`         // default: "self_signed.cert"
@@ -117,11 +122,9 @@ func (p *config) buildHostPolicy() {
 		rePolicy = RegexpWhitelist(patterns...)
 	}
 
-	// no domains specified, allow any domain by default
+	// no domains specified, allow any valid domain by default
 	if listPolicy == nil && rePolicy == nil {
-		p.LetsEncrypt.HostPolicy = func(ctx context.Context, host string) error {
-			return nil
-		}
+		p.LetsEncrypt.HostPolicy = checkHostIsValid
 		return
 	}
 
@@ -134,7 +137,7 @@ func (p *config) buildHostPolicy() {
 			}
 		}
 		if rePolicy != nil {
-			if err = rePolicy(ctx, host); err != nil {
+			if err = rePolicy(ctx, host); err == nil {
 				return nil
 			}
 		}
@@ -197,4 +200,14 @@ func setDefault(dst interface{}, value interface{}) {
 	if reflect.Indirect(dstVal).IsZero() {
 		dstVal.Elem().Set(reflect.ValueOf(value))
 	}
+}
+
+func checkHostIsValid(ctx context.Context, host string) (err error) {
+	if host == "" {
+		return ErrHostNotPermitted
+	}
+	if !strings.Contains(strings.Trim(host, "."), ".") {
+		return ErrHostNotPermitted
+	}
+	return nil
 }

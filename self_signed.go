@@ -31,7 +31,15 @@ var (
 )
 
 func IsSelfSignedAllowed(domain string) bool {
-	return Cfg.SelfSigned.Enable
+	if !Cfg.SelfSigned.Enable {
+		return false
+	}
+	if Cfg.SelfSigned.CheckSNI {
+		if err := checkHostIsValid(context.Background(), domain); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func GetSelfSignedCertificate() (*tls.Certificate, error) {
@@ -58,6 +66,10 @@ func GetSelfSignedCertificate() (*tls.Certificate, error) {
 	}
 	if certPEM != nil && privKeyPEM != nil {
 		tlscert, err := tls.X509KeyPair(certPEM, privKeyPEM)
+		if err != nil {
+			return nil, err
+		}
+		tlscert.Leaf, err = x509.ParseCertificate(tlscert.Certificate[0])
 		if err != nil {
 			return nil, err
 		}
@@ -93,8 +105,7 @@ func createAndSaveSelfSignedCertificate() (*tls.Certificate, error) {
 		return nil, fmt.Errorf("self_signed: failed put private key: %v", err)
 	}
 	tlscert, _ := tls.X509KeyPair(certPEM, privKeyPEM)
-	leaf, _ := x509.ParseCertificate(tlscert.Certificate[0])
-	tlscert.Leaf = leaf
+	tlscert.Leaf, _ = x509.ParseCertificate(tlscert.Certificate[0])
 	return &tlscert, nil
 }
 

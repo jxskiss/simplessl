@@ -29,6 +29,7 @@ lets_encrypt:
 
 self_signed:
   enable: true
+  check_sni: false
   valid_days: 3650
   organization:
     - "SSL Cert Server Self-Signed"

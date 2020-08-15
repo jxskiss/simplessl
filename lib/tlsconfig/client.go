@@ -91,12 +91,6 @@ func (c *Client) addCachedCert(key string, cert *cacheCertificate) {
 
 func (c *Client) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	name := hello.ServerName
-	if name == "" {
-		return nil, errors.New("tlsconfig: missing server name")
-	}
-	if !strings.Contains(strings.Trim(name, "."), ".") {
-		return nil, errors.New("tlsconfig: server name component count invalid")
-	}
 
 	// Note that this conversion is necessary because some server names in the handshakes
 	// started by some clients (such as cURL) are not converted to Punycode, which will
