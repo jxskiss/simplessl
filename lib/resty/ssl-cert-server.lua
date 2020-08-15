@@ -3,41 +3,67 @@ local ocsp = require "ngx.ocsp"
 local ssl = require "ngx.ssl"
 local resty_lock = require "resty.lock"
 local resty_http = require "resty.http"
+local resty_lrucache = require "resty.lrucache"
+
+-- alias functions and variables
+local ngx_log = ngx.log
+local ngx_exit = ngx.exit
+local ngx_time = ngx.time
+local ngx_now = ngx.now
+local ngx_encode_base64 = ngx.encode_base64
+local ngx_decode_base64 = ngx.decode_base64
+local ngx_NOTICE = ngx.NOTICE
+local ngx_WARN = ngx.WARN
+local ngx_ERR = ngx.ERR
+local string_find = string.find
+local string_sub = string.sub
+local table_insert = table.insert
 
 local err_204_no_content = "204 no content"
 
 local _M = { _VERSION = '0.4.0' }
 
+-- We need to initialize the cache on the lua module level so that
+-- it can be shared by all the requests served by each nginx worker process.
+local lru_cache = nil
+
 function _M.new(options)
-    options = options or {}
+    local opts = options or {}
 
     local host, port
-    if not options["backend"] then
-        ngx.log(ngx.ERR, "using default backend server 127.0.0.1:8999")
-        options["backend"] = "127.0.0.1:8999"
+    if not opts.backend then
+        opts.backend = "127.0.0.1:8999"
     else
-        host, port = options["backend"]:match("([^:]+):(%d+)")
+        host, port = opts.backend:match("([^:]+):(%d+)")
         if not host then
-            host = options["backend"]:match("^%d[%d%.]+%d$")
+            host = opts.backend:match("^%d[%d%.]+%d$")
             if not host then
-                ngx.log(ngx.ERR, "invalid backend IP address, using default 127.0.0.1:8999")
-                options["backend"] = "127.0.0.1:8999"
+                ngx_log(ngx_ERR, "invalid backend IP address, using default 127.0.0.1:8999")
+                opts.backend = "127.0.0.1:8999"
             else
-                options["backend"] = host .. ":80"
+                opts.backend = host .. ":80"
             end
         end
     end
-    host, port = options["backend"]:match("([^:]+):(%d+)")
-    options["backend_host"] = host
-    options["backend_port"] = tonumber(port or 80)
+    host, port = opts.backend:match("([^:]+):(%d+)")
+    opts.backend_host = host
+    opts.backend_port = tonumber(port or 80)
 
-    if not options["allow_domain"] then
-        options["allow_domain"] = function(domain)
+    if not opts.allow_domain then
+        opts.allow_domain = function(domain)
             return false
         end
     end
 
-    return setmetatable({ options = options }, { __index = _M })
+    local err = nil
+    opts.lru_maxitems = tonumber(opts.lru_maxitems or 100)
+    lru_cache, err = resty_lrucache.new(opts.lru_maxitems)
+    if err then
+        ngx_log(ngx_ERR, "failed to create lru cache")
+    end
+
+    ngx_log(ngx_NOTICE, "initialized ssl-cert-server with backend ", opts.backend)
+    return setmetatable({ opts = opts }, { __index = _M })
 end
 
 local function _split_string(buf, length)
@@ -45,15 +71,15 @@ local function _split_string(buf, length)
     local result = {}
     local from, sep_idx = 1, 0
     for _ = 1, length - 1 do
-        sep_idx = string.find(buf, sep, from)
+        sep_idx = string_find(buf, sep, from)
         if sep_idx == from then
-            table.insert(result, "")
+            table_insert(result, "")
         else
-            table.insert(result, string.sub(buf, from, sep_idx - 1))
+            table_insert(result, string_sub(buf, from, sep_idx - 1))
         end
         from = sep_idx + 1
     end
-    table.insert(result, string.sub(buf, from))
+    table_insert(result, string_sub(buf, from))
     return result
 end
 
@@ -75,8 +101,8 @@ end
 
 function cachecert:serialize()
     local sep = "|"
-    local cert_b64 = ngx.encode_base64(self.cert_der)
-    local pkey_b64 = ngx.encode_base64(self.pkey_der)
+    local cert_b64 = ngx_encode_base64(self.cert_der)
+    local pkey_b64 = ngx_encode_base64(self.pkey_der)
     return self.cert_type .. sep .. self.fingerprint .. sep .. self.expire_at .. sep .. self.refresh_at .. sep .. cert_b64 .. sep .. pkey_b64
 end
 
@@ -87,8 +113,8 @@ function cachecert:deserialize(buf)
     self.fingerprint = result[2] or ""
     self.expire_at = tonumber(result[3]) or 0
     self.refresh_at = tonumber(result[4]) or 0
-    self.cert_der = ngx.decode_base64(result[5])
-    self.pkey_der = ngx.decode_base64(result[6])
+    self.cert_der = ngx_decode_base64(result[5])
+    self.pkey_der = ngx_decode_base64(result[6])
     return self
 end
 
@@ -122,7 +148,7 @@ end
 local function _log_unlock(lock)
     local ok, lock_err = lock:unlock()
     if not ok then
-        ngx.log(ngx.ERR, "failed to unlock: " .. lock_err)
+        ngx_log(ngx_ERR, "failed to unlock: " .. lock_err)
         return false
     end
     return true
@@ -153,7 +179,7 @@ local function safe_connect(self)
     if failure then
         local data = cjson.decode(failure)
         sleep, previous = data['sleep'], data['previous']
-        if ngx.now() - previous < sleep then
+        if ngx_now() - previous < sleep then
             return nil, "backend is in unhealthy state"
         end
     end
@@ -172,7 +198,7 @@ local function safe_connect(self)
     if failure then
         local data = cjson.decode(failure)
         sleep, previous = data['sleep'], data['previous']
-        if ngx.now() - previous < sleep then
+        if ngx_now() - previous < sleep then
             _log_unlock(lock, lock_key)
             return nil, "backend is in unhealthy state"
         end
@@ -181,7 +207,7 @@ local function safe_connect(self)
     -- Backend looks all right, try it.
     local httpc = resty_http.new()
     httpc:set_timeout(500)
-    local ok, conn_err = httpc:connect(self.options["backend_host"], self.options["backend_port"])
+    local ok, conn_err = httpc:connect(self.opts.backend_host, self.opts.backend_port)
     if not ok then
         -- Block further connections to avoid slowing down nginx too much for busy website.
         -- Connect to backend as soon as possible, no more than 2 minutes.
@@ -193,10 +219,10 @@ local function safe_connect(self)
                 sleep = 120
             end
         end
-        ngx.log(ngx.ERR, "backend in unhealthy state, block for ", sleep, " seconds")
-        local ok, cache_err = cache:set(failure_key, cjson.encode({ sleep = sleep, previous = ngx.now() }))
+        ngx_log(ngx_ERR, "backend in unhealthy state, block for ", sleep, " seconds")
+        local ok, cache_err = cache:set(failure_key, cjson.encode({ sleep = sleep, previous = ngx_now() }))
         if not ok then
-            ngx.log(ngx.ERR, "failed to set backend failure status: ", cache_err)
+            ngx_log(ngx_ERR, "failed to set backend failure status: ", cache_err)
         end
         _log_unlock(lock)
         return nil, conn_err
@@ -206,7 +232,7 @@ local function safe_connect(self)
     if failure then
         local ok, cache_err = cache:delete(failure_key)
         if not ok then
-            ngx.log(ngx.ERR, "failed to delete backend failure status: ", cache_err)
+            ngx_log(ngx_ERR, "failed to delete backend failure status: ", cache_err)
         end
     end
     _log_unlock(lock)
@@ -269,7 +295,7 @@ local function request_cert(self, domain, timeout)
         cert_type = cert_json["type"],
         fingerprint = cert_json["fingerprint"],
         expire_at = cert_json["expire_at"],
-        refresh_at = ngx.time() + cert_json["ttl"],
+        refresh_at = ngx_time() + cert_json["ttl"],
     })
     return cert
 end
@@ -290,7 +316,7 @@ local function get_cert(self, domain)
     if cert_buf then
         cert = cachecert:new():deserialize(cert_buf)
         -- cached certificate TTL not expired
-        if cert.refresh_at > ngx.time() then
+        if cert.refresh_at > ngx_time() then
             return cert
         end
     end
@@ -311,7 +337,7 @@ local function get_cert(self, domain)
     -- Someone may already done the work.
     if cert_buf then
         cert = cachecert:new():deserialize(cert_buf)
-        if cert.refresh_at > ngx.time() then
+        if cert.refresh_at > ngx_time() then
             _log_unlock(lock)
             return cert, is_expired
         end
@@ -326,10 +352,10 @@ local function get_cert(self, domain)
         cert_buf = cert:serialize()
         local ok, cache_err, forcible = cache:set(cert_key, cert_buf)
         if forcible then
-            ngx.log(ngx.ERR, "lua shared dict 'ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while adding certificate for " .. domain .. ")")
+            ngx_log(ngx_ERR, "lua shared dict 'ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while adding certificate for " .. domain .. ")")
         end
         if not ok then
-            ngx.log(ngx.ERR, domain, ": failed to set certificate cache: ", cache_err)
+            ngx_log(ngx_ERR, domain, ": failed to set certificate cache: ", cache_err)
         end
     else
         -- Since certificate renewal happens far before expired on backend server,
@@ -338,9 +364,9 @@ local function get_cert(self, domain)
         -- requests to backend, which may slow down nginx and rise up pressure on busy site.
         -- Also we consider an recently-expired certificate is more friendly to our users
         -- than fallback to self-signed certificate.
-        if cert.expire_at >= ngx.time() then
+        if cert.expire_at <= ngx_time() then
             is_expired = true
-            ngx.log(ngx.ERR, domain, ": fallback to expired certificate")
+            ngx_log(ngx_ERR, domain, ": fallback to expired certificate")
         end
     end
 
@@ -388,18 +414,18 @@ local function request_stapling(self, domain, fingerprint, timeout)
     local stapling = cachestapling:new({
         stapling = resp_stapling,
         expire_at = expire_at,
-        refresh_at = ngx.time() + ttl,
+        refresh_at = ngx_time() + ttl,
     })
     return stapling
 end
 
 local function get_stapling(self, domain, fingerprint)
-    local cache = ngx.shared.ssl_certs_cache
+    local shm_cache = ngx.shared.ssl_certs_cache
     local stapling_key = "stapling:" .. domain .. ":" .. fingerprint
     local lock_key = "lock:stapling:" .. domain
     local lock_exptime = 10  -- seconds
 
-    local stapling_buf, cache_err = cache:get(stapling_key)
+    local stapling_buf, cache_err = shm_cache:get(stapling_key)
     if cache_err then
         return nil, "failed to get OCSP stapling cache: " .. cache_err
     end
@@ -408,7 +434,7 @@ local function get_stapling(self, domain, fingerprint)
     if stapling_buf then
         stapling = cachestapling:new():deserialize(stapling_buf)
         -- cached stapling TTL not expired
-        if stapling.refresh_at > ngx.time() then
+        if stapling.refresh_at > ngx_time() then
             return stapling
         end
     end
@@ -421,7 +447,7 @@ local function get_stapling(self, domain, fingerprint)
     end
 
     -- Check the cache again after holding the lock.
-    stapling_buf, cache_err = cache:get(stapling_key)
+    stapling_buf, cache_err = shm_cache:get(stapling_key)
     if cache_err then
         _log_unlock(lock)
         return nil, "failed to get OCSP stapling cache: " .. cache_err
@@ -440,19 +466,19 @@ local function get_stapling(self, domain, fingerprint)
         -- Consider time deviation, expire the backup 10 seconds before expiration.
         stapling = new_stapling
         stapling_buf = stapling:serialize()
-        local expire_ttl = stapling.expire_at - ngx.time() - 10
+        local expire_ttl = stapling.expire_at - ngx_time() - 10
         if expire_ttl > 0 then
-            local ok, cache_err, forcible = cache:set(stapling_key, stapling_buf, expire_ttl)
+            local ok, cache_err, forcible = shm_cache:set(stapling_key, stapling_buf, expire_ttl)
             if forcible then
-                ngx.log(ngx.ERR, "lua shared dict 'ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while adding OCSP stapling for " .. domain .. ")")
+                ngx_log(ngx_ERR, "lua shared dict 'ssl_certs_cache' might be too small - consider increasing its size (old entries were removed while adding OCSP stapling for " .. domain .. ")")
             end
             if not ok then
-                ngx.log(ngx.ERR, "failed to set OCSP stapling cache: ", cache_err)
+                ngx_log(ngx_ERR, "failed to set OCSP stapling cache: ", cache_err)
             end
         end
     else
         -- In case of backend failure, use cached response if not expired.
-        if stapling and stapling.expire_at < ngx.time() then
+        if stapling and stapling.expire_at < ngx_time() then
             stapling = nil
         end
     end
@@ -475,75 +501,109 @@ local function set_stapling(self, stapling)
     return true
 end
 
+local function get_from_lru_cache(domain)
+    local cert_key = "cert:" .. domain
+    local stapling_key = "stapling:" .. domain
+    local cert = lru_cache:get(cert_key)
+    local stapling = lru_cache:get(stapling_key)
+    return cert, stapling
+end
+
+local function set_cert_to_lru_cache(domain, cert)
+    local ttl = cert.refresh_at - ngx_time()
+    if ttl > 0 then
+        local cert_key = "cert:" .. domain
+        lru_cache:set(cert_key, cert, ttl)
+    end
+end
+
+local function set_stapling_to_lru_cache(domain, stapling)
+    local stapling_key = "stapling:" .. domain
+    lru_cache:set(stapling_key, stapling)
+end
+
 function _M.ssl_certificate(self)
     local domain, domain_err = ssl.server_name()
     if not domain or domain_err then
-        ngx.log(ngx.WARN, "could not determine domain for request (SNI not supported?): ", (domain_err or ""))
+        ngx_log(ngx_WARN, "could not determine domain for request (SNI not supported?): ", (domain_err or ""))
         return
     end
 
     -- Check the domain is one we allow for handling SSL.
-    local allow_domain = self.options["allow_domain"]
-    if not allow_domain(domain) then
-        ngx.log(ngx.NOTICE, domain, ": domain not allowed")
+    if not self.opts.allow_domain(domain) then
+        ngx_log(ngx_NOTICE, domain, ": domain not allowed")
         return
     end
 
-    local cert, is_expired, err = get_cert(self, domain)
-    local has_stapling = false
+    local cert, stapling = get_from_lru_cache(domain)
+    local has_stapling, is_expired
+    local err
+    if not cert then
+        cert, is_expired, err = get_cert(self, domain)
+        if cert and (not is_expired) then
+            set_cert_to_lru_cache(domain, cert)
+        end
+    end
     if cert then
         if (not is_expired) and cert.cert_type < 100 then
             has_stapling = true
         end
-        local ok, err = set_cert(self, cert.cert_der, cert.pkey_der)
+        local ok, set_err = set_cert(self, cert.cert_der, cert.pkey_der)
         if not ok then
-            ngx.log(ngx.ERR, domain, ": ", err)
+            ngx_log(ngx_ERR, domain, ": ", set_err)
             return
         end
     else
-        ngx.log(ngx.ERR, domain, ": ", err)
+        ngx_log(ngx_ERR, domain, ": ", err)
         return
     end
 
-    if (not self.options["disable_stapling"]) and has_stapling then
-        local stapling, err = get_stapling(self, domain, cert.fingerprint)
+    if self.opts.disable_stapling or (not has_stapling) then
+        return
+    end
+
+    if not stapling then
+        stapling, err = get_stapling(self, domain, cert.fingerprint)
         if stapling then
-            local ok, err = set_stapling(self, stapling.stapling)
-            if not ok then
-                ngx.log(ngx.ERR, domain, ": ", err)
-                return
-            end
-        else
-            ngx.log(ngx.NOTICE, domain, ": ", err)
+            set_stapling_to_lru_cache(domain, stapling)
+        end
+    end
+    if stapling then
+        local ok, set_err = set_stapling(self, stapling.stapling)
+        if not ok then
+            ngx_log(ngx_ERR, domain, ": ", set_err)
             return
         end
+    else
+        ngx_log(ngx_NOTICE, domain, ": ", err)
+        return
     end
 end
 
 function _M.challenge_server(self)
     local domain, domain_err = ssl.server_name()
     if domain_err then
-        ngx.log(ngx.WARN, "failed to get ssl.server_name (SNI not supported?): ", domain_err)
+        ngx_log(ngx_WARN, "failed to get ssl.server_name (SNI not supported?): ", domain_err)
     end
     if not domain or domain == "" then
         domain = ngx.var.host
         if not domain or domain == "" then
-            ngx.log(ngx.ERR, "could not determine domain from either ssl.server_name nor ngx.var.host")
-            ngx.exit(ngx.HTTP_BAD_REQUEST)
+            ngx_log(ngx_ERR, "could not determine domain from either ssl.server_name nor ngx.var.host")
+            ngx_exit(ngx.HTTP_BAD_REQUEST)
         end
     end
-    if not self.options["allow_domain"](domain) then
-        ngx.log(ngx.NOTICE, domain, ": domain not allowed")
-        ngx.exit(ngx.HTTP_NOT_FOUND)
+    if not self.opts.allow_domain(domain) then
+        ngx_log(ngx_NOTICE, domain, ": domain not allowed")
+        ngx_exit(ngx.HTTP_NOT_FOUND)
     end
 
     -- Proxy challenge request to backend cert server.
     local httpc = resty_http.new()
     httpc:set_timeout(500)
-    local ok, conn_err = httpc:connect(self.options["backend_host"], self.options["backend_port"])
+    local ok, conn_err = httpc:connect(self.opts.backend_host, self.opts.backend_port)
     if not ok then
-        ngx.log(ngx.ERR, domain, ": failed to connect backend server to proxy challenge request: ", conn_err)
-        ngx.exit(ngx.HTTP_BAD_GATEWAY)
+        ngx_log(ngx_ERR, domain, ": failed to connect backend server to proxy challenge request: ", conn_err)
+        ngx_exit(ngx.HTTP_BAD_GATEWAY)
     end
 
     httpc:set_timeout(2000)
