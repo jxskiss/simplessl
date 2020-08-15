@@ -34,9 +34,12 @@ var (
 )
 
 func buildRoutes(mux *http.ServeMux, manager *Manager) {
-	mux.Handle("/cert/", loggingMiddleware(http.HandlerFunc(manager.HandleCertificate)))
-	mux.Handle("/ocsp/", loggingMiddleware(http.HandlerFunc(manager.HandleOCSPStapling)))
-	mux.Handle("/.well-known/acme-challenge/", loggingMiddleware(manager.m.HTTPHandler(nil)))
+	var _mw = func(h http.Handler) http.Handler {
+		return loggingMiddleware(recoverMiddleware(h))
+	}
+	mux.Handle("/cert/", _mw(http.HandlerFunc(manager.HandleCertificate)))
+	mux.Handle("/ocsp/", _mw(http.HandlerFunc(manager.HandleOCSPStapling)))
+	mux.Handle("/.well-known/acme-challenge/", _mw(manager.m.HTTPHandler(nil)))
 }
 
 // HandlerCertificate handlers requests of SSL certificate.

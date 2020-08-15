@@ -3,7 +3,7 @@ pid_file: "ssl-cert-server.pid"
 
 storage:
   type: "dir_cache"  # or redis
-  dir_cache: "./secret_dir"
+  dir_cache: "./secret-dir"
   redis:
     addr: "127.0.0.1:6379"
 

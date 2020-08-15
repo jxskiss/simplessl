@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/idna"
@@ -35,7 +36,9 @@ type Client struct {
 	opts       *Options
 	hostPolicy func(name string) error
 
-	cache sync.Map
+	// copy-on-write map
+	cacheMu sync.Mutex
+	cache   atomic.Value // map[string]*cacheCertificate
 }
 
 func NewClient(sslCertServerHost string, opts *Options) *Client {
@@ -43,21 +46,47 @@ func NewClient(sslCertServerHost string, opts *Options) *Client {
 		sslCertServerHost = "http://" + sslCertServerHost
 	}
 	sslCertServerHost = strings.TrimSuffix(sslCertServerHost, "/")
+	if opts == nil {
+		opts = &Options{}
+	}
 	client := &Client{
 		serverHost: sslCertServerHost,
+		opts:       opts,
 	}
-
+	client.cache.Store(make(map[string]*cacheCertificate))
 	go client.watch()
 
-	if opts != nil {
-		// make host policy
-		client.hostPolicy = makeHostWhitelist(opts.AllowDomains...)
+	// make host policy
+	client.hostPolicy = makeHostWhitelist(opts.AllowDomains...)
 
-		// preload certificates for pre-defined domain names
-		client.preloadDomains(opts.PreloadAsync, opts.PreloadDomains...)
-	}
+	// preload certificates for pre-defined domain names
+	client.preloadDomains(opts.PreloadAsync, opts.PreloadDomains...)
 
 	return client
+}
+
+func (c *Client) getCacheMap() map[string]*cacheCertificate {
+	return c.cache.Load().(map[string]*cacheCertificate)
+}
+
+func (c *Client) getCachedCert(key string) *cacheCertificate {
+	return c.getCacheMap()[key]
+}
+
+func (c *Client) addCachedCert(key string, cert *cacheCertificate) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	oldCache := c.cache.Load().(map[string]*cacheCertificate)
+	newLen := len(oldCache)
+	if _, ok := oldCache[key]; !ok {
+		newLen += 1
+	}
+	newCache := make(map[string]*cacheCertificate, newLen)
+	for k, v := range oldCache {
+		newCache[k] = v
+	}
+	newCache[key] = cert
+	c.cache.Store(newCache)
 }
 
 func (c *Client) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -97,27 +126,26 @@ func (c *Client) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 
 func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 	cacheKey := domainName
-	cacheVal, ok := c.cache.Load(cacheKey)
-	if ok {
+	cacheCert := c.getCachedCert(cacheKey)
+	if cacheCert != nil {
 		now := time.Now().Unix()
-		cached := cacheVal.(*cacheCertificate)
 		// in case the cached OCSP stapling is going to expired, abandon it
-		if cached.staplingExpire > 0 && cached.staplingExpire <= now-60 {
-			newCert := *cached.cert
+		if cacheCert.staplingExpire > 0 && cacheCert.staplingExpire <= now-60 {
+			newCert := *cacheCert.cert
 			newCert.OCSPStaple = nil
 			newCacheCert := &cacheCertificate{
 				cert:            &newCert,
-				certType:        cached.certType,
-				fingerprint:     cached.fingerprint,
-				certExpire:      cached.certExpire,
-				certRefresh:     cached.certRefresh,
+				certType:        cacheCert.certType,
+				fingerprint:     cacheCert.fingerprint,
+				certExpire:      cacheCert.certExpire,
+				certRefresh:     cacheCert.certRefresh,
 				staplingExpire:  0,
 				staplingRefresh: 0,
 			}
-			c.cache.Store(cacheKey, newCacheCert)
-			cached = newCacheCert
+			c.addCachedCert(cacheKey, newCacheCert)
+			cacheCert = newCacheCert
 		}
-		return cached.cert, nil
+		return cacheCert.cert, nil
 	}
 
 	// first request for a new domain, give it a long time
@@ -146,7 +174,7 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 	respCert.cert.OCSPStaple = stapling
 	respCert.staplingExpire = staplingExpire
 	respCert.staplingRefresh = staplingRefresh
-	c.cache.Store(cacheKey, respCert)
+	c.addCachedCert(cacheKey, respCert)
 	return respCert.cert, nil
 }
 
@@ -237,18 +265,14 @@ func (c *Client) watch() {
 	ticker := time.Minute
 	for range time.Tick(ticker) {
 
-		// in case of error, retry 2 times with one second interval
-		for i := 0; i < 3; i++ {
-			cached := make(map[string]*cacheCertificate)
-			c.cache.Range(func(k, v interface{}) bool {
-				cached[k.(string)] = v.(*cacheCertificate)
-				return true
-			})
+		// in case of error, retry 2 times
+		for i := 1; i < 4; i++ {
+			cached := c.getCacheMap()
 			err := c.refresh(cached)
 			if err == nil {
 				break
 			}
-			time.Sleep(time.Second)
+			time.Sleep(time.Duration(i) * time.Second)
 		}
 	}
 }
@@ -260,8 +284,8 @@ func (c *Client) refresh(cached map[string]*cacheCertificate) error {
 
 	bgctx := context.Background()
 	now := time.Now().Unix()
-	for domainName, citem := range cached {
-		if citem.certRefresh > now && citem.staplingRefresh > now {
+	for domainName, cacheCert := range cached {
+		if cacheCert.certRefresh > now && cacheCert.staplingRefresh > now {
 			continue
 		}
 
@@ -269,14 +293,16 @@ func (c *Client) refresh(cached map[string]*cacheCertificate) error {
 
 		// shallow copy the certificate to avoid data race
 		// we may change the OCSPStaple below
-		cert := *citem.cert
+		cert := *cacheCert.cert
 
 		newCacheCert := &cacheCertificate{
 			cert:            &cert,
-			certRefresh:     citem.certRefresh,
-			certExpire:      citem.certExpire,
-			staplingRefresh: citem.staplingRefresh,
-			staplingExpire:  citem.staplingExpire,
+			certType:        cacheCert.certType,
+			fingerprint:     cacheCert.fingerprint,
+			certRefresh:     cacheCert.certRefresh,
+			certExpire:      cacheCert.certExpire,
+			staplingRefresh: cacheCert.staplingRefresh,
+			staplingExpire:  cacheCert.staplingExpire,
 		}
 
 		ctx, cancel := context.WithTimeout(bgctx, time.Second)
@@ -288,11 +314,19 @@ func (c *Client) refresh(cached map[string]*cacheCertificate) error {
 					certErr = err
 				}
 			} else {
-				newCacheCert.cert = respCert.cert
-				newCacheCert.certType = respCert.certType
-				newCacheCert.fingerprint = respCert.fingerprint
 				newCacheCert.certExpire = respCert.certExpire
 				newCacheCert.certRefresh = respCert.certRefresh
+
+				// certificate renewed or type changed
+				// save new cert and drop the old OCSP stapling information
+				if newCacheCert.certType != respCert.certType ||
+					newCacheCert.fingerprint != respCert.fingerprint {
+					newCacheCert.cert = respCert.cert
+					newCacheCert.certType = respCert.certType
+					newCacheCert.fingerprint = respCert.fingerprint
+					newCacheCert.staplingExpire = 0
+					newCacheCert.staplingRefresh = 0
+				}
 			}
 		}
 		if !c.opts.DisableStapling &&
@@ -319,7 +353,7 @@ func (c *Client) refresh(cached map[string]*cacheCertificate) error {
 		}
 		cancel()
 
-		c.cache.Store(domainName, newCacheCert)
+		c.addCachedCert(domainName, newCacheCert)
 	}
 
 	if certErr != nil {

@@ -427,7 +427,7 @@ local function get_stapling(self, domain, fingerprint)
         return nil, "failed to get OCSP stapling cache: " .. cache_err
     end
     if stapling_buf then
-        stapling = cachestapling.new():deserialize(stapling_buf)
+        stapling = cachestapling:new():deserialize(stapling_buf)
         _log_unlock(lock)
         return stapling
     end

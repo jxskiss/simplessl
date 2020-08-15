@@ -93,6 +93,8 @@ func createAndSaveSelfSignedCertificate() (*tls.Certificate, error) {
 		return nil, fmt.Errorf("self_signed: failed put private key: %v", err)
 	}
 	tlscert, _ := tls.X509KeyPair(certPEM, privKeyPEM)
+	leaf, _ := x509.ParseCertificate(tlscert.Certificate[0])
+	tlscert.Leaf = leaf
 	return &tlscert, nil
 }
 

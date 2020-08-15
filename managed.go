@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"sync"
@@ -82,16 +83,21 @@ func loadManagedCertificateFromStore(cert, privKey string) (*tls.Certificate, er
 	ctx := context.Background()
 	certPEM, err := store.Get(ctx, cert)
 	if err != nil {
-		return nil, fmt.Errorf("managed: failed get certificate bytes")
+		return nil, fmt.Errorf("managed: failed get certificate from %s: %v", cert, err)
 	}
 	privKeyPEM, err := store.Get(ctx, privKey)
 	if err != nil {
-		return nil, fmt.Errorf("managed: failed get private key bytes")
+		return nil, fmt.Errorf("managed: failed get private key from %s: %v", privKey, err)
 	}
 	tlscert, err := tls.X509KeyPair(certPEM, privKeyPEM)
 	if err != nil {
-		return nil, fmt.Errorf("managed: failed parse public/private key pair")
+		return nil, fmt.Errorf("managed: failed parse public/private key pair: %v", err)
 	}
+	leaf, err := x509.ParseCertificate(tlscert.Certificate[0])
+	if err != nil {
+		return nil, fmt.Errorf("managed: failed parse x509 certificate: %v", err)
+	}
+	tlscert.Leaf = leaf
 	return &tlscert, nil
 }
 

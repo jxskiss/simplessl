@@ -1,7 +1,10 @@
 VERSION := $(shell sed -n -e 's/^const VERSION = "\(.*\)"/\1/p' version.go)
 
 build:
-	go build
+	go build -o output/ssl-cert-server
+
+tlsconfig_example:
+	go build -o output/tlsconfig-example ./lib/tlsconfig/example
 
 release:
 	for os in darwin linux windows; do \
