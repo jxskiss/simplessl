@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"golang.org/x/crypto/acme"
 	"io"
 	mathrand "math/rand"
 	"net"
@@ -85,6 +86,25 @@ func EncodeECDSAKey(w io.Writer, key *ecdsa.PrivateKey) error {
 	}
 	pb := &pem.Block{Type: "EC PRIVATE KEY", Bytes: b}
 	return pem.Encode(w, pb)
+}
+
+var manager *Manager
+
+func GetManager() *Manager {
+	if manager == nil {
+		manager = &Manager{
+			m: &autocert.Manager{
+				Prompt:      autocert.AcceptTOS,
+				Cache:       Cfg.Storage.Cache,
+				RenewBefore: time.Duration(Cfg.LetsEncrypt.RenewBefore) * 24 * time.Hour,
+				Client:      &acme.Client{DirectoryURL: Cfg.LetsEncrypt.DirectoryURL},
+				Email:       Cfg.LetsEncrypt.Email,
+				HostPolicy:  Cfg.LetsEncrypt.HostPolicy,
+			},
+			ForceRSA: Cfg.LetsEncrypt.ForceRSA,
+		}
+	}
+	return manager
 }
 
 type Manager struct {

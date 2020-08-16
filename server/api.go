@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bytes"
@@ -34,13 +34,13 @@ var (
 	RspErrEncodeCertificate = []byte("Error encode certificate.")
 )
 
-func buildRoutes(mux *http.ServeMux, manager *Manager) {
+func (m *Manager) BuildRoutes(mux *http.ServeMux) {
 	var _mw = func(h http.Handler) http.Handler {
 		return loggingMiddleware(recoverMiddleware(h))
 	}
-	mux.Handle("/cert/", _mw(http.HandlerFunc(manager.HandleCertificate)))
-	mux.Handle("/ocsp/", _mw(http.HandlerFunc(manager.HandleOCSPStapling)))
-	mux.Handle("/.well-known/acme-challenge/", _mw(manager.m.HTTPHandler(nil)))
+	mux.Handle("/cert/", _mw(http.HandlerFunc(m.HandleCertificate)))
+	mux.Handle("/ocsp/", _mw(http.HandlerFunc(m.HandleOCSPStapling)))
+	mux.Handle("/.well-known/acme-challenge/", _mw(m.m.HTTPHandler(nil)))
 }
 
 // HandlerCertificate handlers requests of SSL certificate.

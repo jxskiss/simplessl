@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"fmt"
@@ -95,7 +95,7 @@ func identifyPanic() string {
 	return fmt.Sprintf("pc:%x", pc)
 }
 
-func flushLogs() {
+func FlushLogs() {
 	_ = os.Stdout.Sync()
 	_ = os.Stderr.Sync()
 }

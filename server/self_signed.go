@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bytes"
@@ -10,20 +10,14 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"flag"
 	"fmt"
-	"io/ioutil"
-	"log"
 	"math/big"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 )
-
-var defaultSelfSignedOrganization = []string{"SSL Cert Server Self-Signed"}
 
 var (
 	selfSignedMu   sync.Mutex
@@ -75,7 +69,7 @@ func GetSelfSignedCertificate() (*tls.Certificate, error) {
 func createAndSaveSelfSignedCertificate() (*tls.Certificate, error) {
 	validDays := Cfg.SelfSigned.ValidDays
 	organization := Cfg.SelfSigned.Organization
-	certPEM, privKeyPEM, err := createSelfSignedCertificate(validDays, organization)
+	certPEM, privKeyPEM, err := CreateSelfSignedCertificate(validDays, organization)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +83,7 @@ func createAndSaveSelfSignedCertificate() (*tls.Certificate, error) {
 	return tlscert, nil
 }
 
-func createSelfSignedCertificate(validDays int, organization []string) (certPEM, privKeyPEM []byte, err error) {
+func CreateSelfSignedCertificate(validDays int, organization []string) (certPEM, privKeyPEM []byte, err error) {
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		err = fmt.Errorf("self_singed: failed generate private key: %v", err)
@@ -131,57 +125,4 @@ func createSelfSignedCertificate(validDays int, organization []string) (certPEM,
 	_ = EncodeECDSAKey(privKeyBuf, privKey)
 	privKeyPEM = privKeyBuf.Bytes()
 	return
-}
-
-/*
-Sub command to generate self-signed certificate.
-*/
-
-const generateSelfSignedCertSubCommand = "generate-self-signed"
-
-var generateSelfSignedCertFlagSet = flag.NewFlagSet(generateSelfSignedCertSubCommand, flag.ExitOnError)
-var generateSelfSignedCertOptions = struct {
-	validDays    int
-	out          string
-	certOut      string
-	keyOut       string
-	organization StringArray
-}{}
-
-func init() {
-	cmdFlags := generateSelfSignedCertFlagSet
-	cmdFlags.IntVar(&generateSelfSignedCertOptions.validDays,
-		"valid-days", 365, "number of days the cert is valid for")
-	cmdFlags.StringVar(&generateSelfSignedCertOptions.out,
-		"out", "./self_signed", "output single file contains both private key and certificate")
-	cmdFlags.StringVar(&generateSelfSignedCertOptions.certOut,
-		"cert-out", "./self_signed.cert", "output certificate file")
-	cmdFlags.StringVar(&generateSelfSignedCertOptions.keyOut,
-		"key-out", "./self_signed.key", "output private key file")
-	cmdFlags.Var(&generateSelfSignedCertOptions.organization,
-		"organization", "certificate organization (may be given multiple times)")
-}
-
-func cmdGenerateSelfSignedCertificate() {
-	generateSelfSignedCertFlagSet.Parse(os.Args[2:])
-	opts := generateSelfSignedCertOptions
-	if len(opts.organization) == 0 {
-		opts.organization = defaultSelfSignedOrganization
-	}
-
-	certPEM, privKeyPEM, err := createSelfSignedCertificate(opts.validDays, opts.organization)
-	if err != nil {
-		log.Fatalf("[FATAL] %v", err)
-	}
-	err = ioutil.WriteFile(opts.keyOut, privKeyPEM, 0644)
-	if err == nil {
-		err = ioutil.WriteFile(opts.certOut, certPEM, 0644)
-	}
-	if err == nil {
-		outData := append(privKeyPEM, certPEM...)
-		err = ioutil.WriteFile(opts.out, outData, 0644)
-	}
-	if err != nil {
-		log.Fatalf("[FATAL] self_signed: failed write certificate files: %v", err)
-	}
 }

@@ -1,4 +1,4 @@
-VERSION := $(shell sed -n -e 's/^const VERSION = "\(.*\)"/\1/p' version.go)
+VERSION := $(shell sed -n -e 's/^const VERSION = "\(.*\)"/\1/p' main.go)
 
 build:
 	go build -o output/ssl-cert-server

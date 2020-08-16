@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -15,17 +15,7 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-// StringArray implements flag.Value interface.
-type StringArray []string
-
-func (v *StringArray) Set(s string) error {
-	*v = append(*v, s)
-	return nil
-}
-
-func (v *StringArray) String() string {
-	return strings.Join(*v, ",")
-}
+var DefaultSelfSignedOrganization = []string{"SSL Cert Server Self-Signed"}
 
 type config struct {
 	Listen  string `yaml:"listen"`   // default: "127.0.0.1:8999"
@@ -97,7 +87,7 @@ func (p *config) setupDefaultOptions() {
 	setDefault(&Cfg.SelfSigned.ValidDays, 365)
 	setDefault(&Cfg.SelfSigned.CertKey, "self_signed")
 	if len(Cfg.SelfSigned.Organization) == 0 {
-		Cfg.SelfSigned.Organization = defaultSelfSignedOrganization
+		Cfg.SelfSigned.Organization = DefaultSelfSignedOrganization
 	}
 }
 
@@ -149,13 +139,13 @@ var Flags struct {
 	ConfigFile  string // default: "./conf.yaml"
 }
 
-func initFlags() {
+func InitFlags() {
 	flag.BoolVar(&Flags.ShowVersion, "version", false, "print version string and quit")
 	flag.StringVar(&Flags.ConfigFile, "config", "./conf.yaml", "configuration filename")
 	flag.Parse()
 }
 
-func initConfig() {
+func InitConfig() {
 	confbuf, err := ioutil.ReadFile(Flags.ConfigFile)
 	if err != nil && !os.IsNotExist(err) {
 		log.Fatalf("[FATAL] server: failed read configuration: %v", err)
