@@ -79,9 +79,8 @@ Then download the cert server service binary file, either build by yourself:
 
 Or, download prebuilt binaries from the [release page](https://github.com/jxskiss/ssl-cert-server/releases).
 
-Copy example.conf.yaml to your favorite location and edit it to your need.
-You may check [example.conf.yaml](https://github.com/jxskiss/ssl-cert-server/blob/master/api.go)
-for example configuration and explanation of the available options.
+Copy `example.conf.yaml` to your favorite location and edit it to fit your need.
+Configuration options are explained in the example file.
 
 Run your cert server:
 
@@ -168,6 +167,27 @@ http {
         }
     }
 
+}
+```
+
+## Package `lib/tlsconfig`
+
+You may use the package `lib/tlsconfig` to run Golang program with TLS. eg:
+
+```go
+func main() {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("It works!"))
+	}
+
+	// See doc of tlsconfig.Options for available options.
+	tlsConfig := tlsconfig.NewConfig("127.0.0.1:8999", tlsconfig.Options{})
+	listener, err := tls.Listen("tcp", ":8443", tlsConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	http.Serve(listener, http.HandlerFunc(handler))
 }
 ```
 

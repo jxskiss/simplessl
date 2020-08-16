@@ -26,9 +26,36 @@ lets_encrypt:
     - "api2-(\\w+)\\.example\\.com"
 
 self_signed:
-  enable: true
+  enable: false
   check_sni: false
   valid_days: 3650
   organization:
     - "SSL Cert Server Self-Signed"
   cert_key: "self_signed"
+
+# listen: The address ssl-cert-server should listen, be sure DON'T open the server to the world.
+# pid_file: The pid file path, it's used when doing graceful restarts.
+
+# storage: Cache storage settings.
+# storage.type: "dir_cache" or "redis"
+# storage.dir_cache: If type is "dir_cache", which directory to store cached certificate files.
+# storage.redis: If type is "redis", the connection settings of Redis.
+
+# managed: Managed certificates settings.
+# managed.pattern: pattern to match domain names
+# managed.cert_key: if pattern is matched, the key of the cache storage to load certificate from
+
+# lets_encrypt: ACME Let's Encrypt settings.
+# lets_encrypt.staging: Use Let's Encrypt staging directory (default false)
+# lets_encrypt.force_rsa: Generate certificates with 2048-bit RSA keys (default false)
+# lets_encrypt.renew-before: Renew certificates before how many days (default 30)
+# lets_encrypt.email: ACME account contact email, if Let's Encrypt client's key is already registered, this is not used
+# lets_encrypt.domains: Allowed domain names, match by check string equality
+# lets_encrypt.re_patterns: Allowed domain name regex patterns
+
+# self_signed: Self signed certificate settings.
+# self_signed.enable: whether enable self-signed certificate (default false)
+# self_signed.check_sni: whether check SNI name for self-signed certificate (default false)
+# self_signed.valid_days: how may days to set the certificate when generating self-signed certificate
+# self_signed.organization: organization to set the certificate when generating self-signed certificate
+# self_signed.cert_key: the key to put generated self signed certificate into cache storage
