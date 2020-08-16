@@ -2,8 +2,6 @@ package tlsconfig
 
 import (
 	"fmt"
-	"log"
-
 	"golang.org/x/net/idna"
 )
 
@@ -31,6 +29,11 @@ type Options struct {
 
 	// DisableStapling optionally disables OCSP stapling.
 	DisableStapling bool
+
+	// ErrorLog specifies an optional function to log error messages.
+	// If nil, error messages will be logged using the default logger from
+	// "log" package.
+	ErrorLog func(format string, args ...interface{})
 }
 
 func makeHostWhitelist(hosts ...string) func(string) error {
@@ -56,7 +59,7 @@ func (c *Client) preloadDomains(async bool, domains ...string) {
 		for _, domainName := range domains {
 			_, err := c.getCertificate(domainName)
 			if err != nil {
-				log.Printf("[WARN] tlsconfig: failed preload certificate: domain= %s err= %v", domainName, err)
+				c.opts.ErrorLog("[WARN] tlsconfig: failed preload certificate: domain= %s err= %v", domainName, err)
 			}
 		}
 	}

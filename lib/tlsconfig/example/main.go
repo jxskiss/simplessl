@@ -19,7 +19,7 @@ func main() {
 		w.Write([]byte("It works!"))
 	}
 
-	tlsConfig := tlsconfig.NewConfig(*certServer, nil)
+	tlsConfig := tlsconfig.NewConfig(*certServer, tlsconfig.Options{})
 	listener, err := tls.Listen("tcp", fmt.Sprintf(":%d", *port), tlsConfig)
 	if err != nil {
 		log.Fatal(err)
