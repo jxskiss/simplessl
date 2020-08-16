@@ -10,18 +10,50 @@ By using ssl-cert-server to register SSL certificates with Let's Encrypt, you ag
 
 I got inspires and stole some code from the awesome project [lua-resty-auto-ssl](https://github.com/GUI/lua-resty-auto-ssl) and Golang's autocert package, many thanks 😀
 
+## Centric certificate server
+
+Compared to other open source projects, this project provides a centric certificate server
+to manage all your certificates (both auto issued or manually managed, and self signed) in one place.
+The OpenResty plugin and Golang TLS config library acts as client to the server.
+
+By this design, there are several advantages:
+
+1. Offload ACME related work and communication with storage to the backend Golang server,
+   let Nginx/OpenResty do what it is designed for and best at;
+1. It's more friendly to distributed deployments, one can manage all certificates in just one place,
+   the OpenResty plugin and Golang library deployment is simple and straightforward;
+   and you get only single one certificate for a domain, and not as much certificates as your
+   web server instances (as some other similar project does);
+1. Golang program is considered far more easier to maintain and do troubleshooting than
+   doing ACME work and storage within Lua;
+1. Also, Golang program is considered far more easier to extend to support new type of storage,
+   or new features (eg. security related things);
+
+A multi-layered cache mechanism is used to help frontend Nginx and Golang web servers
+automatically update to renewed certificates with negligible performance penalty, and
+without any reloading:
+
+- OpenResty per-worker LRU cache (Golang client uses in memory copy-on-write cache), fallback to
+- OpenResty shared memory cache (not needed for Golang client), fallback to
+- In memory copy-on-write cache within backend ssl-cert-server, finally go to
+- Storage or ACME server.
+
+The cached certificates and OCSP staple is automatically renewed and refreshed in backend ssl-cert-server.
+
 ## Status
 
-Considered STABLE.
-This program has been running for more than 2 years for my personal sites, but as is a spare-time project,
-anyone interested with this is HIGHLY RECOMMENDED to do testing in your environment.
+Considered BETA.
+
+Although this program has been running for 3 years supporting my personal sites, but this is a spare-time project,
+and has not known deployment for large production systems.
+Thus anyone interested with this is HIGHLY RECOMMENDED to do testing in your environment.
 
 NOTE:
 
 The release version 0.1.x has a bug which may cause dead loop in OCSP stapling updater after months long running.
 The bug has not much impact on CPU usage, but will blow up the logging files.
 
-If anyone is using the 0.1.x release, please consider upgrade to newer release as soon as possible.
+If anyone is using the old 0.1.x release, please consider upgrade to newer release as soon as possible.
 
 ## Installation
 
@@ -47,19 +79,21 @@ Then download the cert server service binary file, either build by yourself:
 
 Or, download prebuilt binaries from the [release page](https://github.com/jxskiss/ssl-cert-server/releases).
 
-Run your cert server (eg: for any sub-domain of example.com):
+Copy example.conf.yaml to your favorite location and edit it to your need.
+You may check [example.conf.yaml](https://github.com/jxskiss/ssl-cert-server/blob/master/api.go)
+for example configuration and explanation of the available options.
+
+Run your cert server:
 
 ```bash
-/path/to/ssl-cert-server --listen=127.0.0.1:8999 \
-    --email=admin@example.com \
-    --pattern=".*\\.example\\.com$"
+/path/to/ssl-cert-server -config=/path/to/your/conf.yaml
 ```
 
-For all available options for `ssl-cert-server` service, please see the "Available options" section.
+Or to generate a self-signed certificate, see `ssl-cert-server generate-self-signed -h`.
 
 Now you can configure your OpenResty to use the cert server for SSL certificates, see the following configuration example.
 
-## Configuration Example
+## Nginx configuration Example
 
 ```conf
 events {
@@ -84,9 +118,11 @@ http {
         end
 
         -- Initialize backend certificate server instance.
+        -- Change lru_maxitems according to your deployment, default 100.
         cert_server = (require "resty.ssl-cert-server").new({
             backend = '127.0.0.1:8999',
-            allow_domain = allow_domain
+            allow_domain = allow_domain,
+            lru_maxitems = 100,
         })
     }
 
@@ -135,37 +171,30 @@ http {
 }
 ```
 
-## Available options for cert server
-
-```text
-Usage of ssl-cert-server:
-  -listen string
-        listen address, be sure DON't open to the world (default "127.0.0.1:8999")
-  -email string
-        contact email, if Let's Encrypt client's key is already registered, this is not used
-  -force-rsa
-        generate certificates with 2048-bit RSA keys (default false)
-  -before int
-        renew certificates before how many days (default 30)
-  -cache-dir string
-        which directory to cache certificates (default "./secret-dir")
-  -domain value
-        allowed domain names (may be given multiple times)
-  -pattern value
-        allowed domain regex pattern using POSIX ERE (egrep) syntax, (may be given multiple times,
-        will be ignored when domain parameters supplied)
-  -staging
-        use Let's Encrypt staging directory (default false)
-  -version
-        print version string and quit
-```
-
 ## Dependency
 
 - [OpenResty](https://openresty.org/)
 - [lua-resty-http](https://github.com/pintsized/lua-resty-http)
 
-## Changes
+## Change history
+
+### v0.4.0 @ 2020-08-16
+
+- new: support managed certificates
+- new: support self-signed certificate
+- new: Golang library to use with arbitrary Golang program which needs TLS support
+- new: sub-command to generate a self-signed certificate
+- new: (lua) layered cache for sake of best performance (per-worker LRU cache + shared memory cache)
+- new: graceful restart like Nginx without losing any request
+- change: use YAML configuration file to replace command line flags,
+  since we support more features, the command line flags is not enough to do configuration 
+- change: (internal) reorganize code into smaller files for better maintainability
+- change: (internal) optimize lua shared memory cache using for better performance
+- fix: add fingerprint to certificate and OCSP staple cache, to make sure
+  we get correct OCSP staple for the corresponding certificate, without this,
+  incorrect OCSP staple cache may be used for a short period after the certificate is renewed
+
+This release is a major change with quite a lot of new features and improvements.
 
 ### v0.3.0 @ 2020-03-13
 
