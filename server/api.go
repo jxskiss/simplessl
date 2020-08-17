@@ -210,7 +210,7 @@ func (m *Manager) GetOCSPStaplingByName(name string, fingerprint string) ([]byte
 }
 
 func (m *Manager) limitTTL(ttl time.Duration) int {
-	if ttl <= 0 {
+	if ttl <= time.Minute {
 		return 0
 	}
 	var ttlSeconds int64 = 3600

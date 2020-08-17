@@ -12,7 +12,7 @@ I got inspires and stole some code from the awesome project [lua-resty-auto-ssl]
 
 ## Centric certificate server
 
-Compared to other open source projects, this project provides a centric certificate server
+Compared to other similar projects, this project provides a centric certificate server
 to manage all your certificates (both auto issued or manually managed, and self signed) in one place.
 The OpenResty plugin and Golang TLS config library acts as client to the server.
 
@@ -33,7 +33,7 @@ A multi-layered cache mechanism is used to help frontend Nginx and Golang web se
 automatically update to renewed certificates with negligible performance penalty, and
 without any reloading:
 
-- OpenResty per-worker LRU cache (Golang client uses in memory copy-on-write cache), fallback to
+- OpenResty per-worker LRU cache with cdata pointer (Golang client uses in memory copy-on-write cache), fallback to
 - OpenResty shared memory cache (not needed for Golang client), fallback to
 - In memory copy-on-write cache within backend ssl-cert-server, finally go to
 - Storage or ACME server.

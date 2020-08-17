@@ -84,12 +84,15 @@ local function _split_string(buf, length)
 end
 
 local cachecert = {
-    cert_der = nil,
-    pkey_der = nil,
+    cert_pem = nil,
+    pkey_pem = nil,
     cert_type = 0,
     fingerprint = "",
     expire_at = 0,
     refresh_at = 0,
+
+    cert_cdata = nil,
+    pkey_cdata = nil,
 }
 
 function cachecert:new(obj)
@@ -101,9 +104,7 @@ end
 
 function cachecert:serialize()
     local sep = "|"
-    local cert_b64 = ngx_encode_base64(self.cert_der)
-    local pkey_b64 = ngx_encode_base64(self.pkey_der)
-    return self.cert_type .. sep .. self.fingerprint .. sep .. self.expire_at .. sep .. self.refresh_at .. sep .. cert_b64 .. sep .. pkey_b64
+    return self.cert_type .. sep .. self.fingerprint .. sep .. self.expire_at .. sep .. self.refresh_at .. sep .. self.cert_pem .. sep .. self.pkey_pem
 end
 
 function cachecert:deserialize(buf)
@@ -113,9 +114,24 @@ function cachecert:deserialize(buf)
     self.fingerprint = result[2] or ""
     self.expire_at = tonumber(result[3]) or 0
     self.refresh_at = tonumber(result[4]) or 0
-    self.cert_der = ngx_decode_base64(result[5])
-    self.pkey_der = ngx_decode_base64(result[6])
+    self.cert_pem = result[5]
+    self.pkey_pem = result[6]
     return self
+end
+
+function cachecert:parse_cert_and_priv_key()
+    local cert_cdata, pkey_cdata, err
+    cert_cdata, err = ssl.parse_pem_cert(self.cert_pem)
+    if err then
+        return "failed to parse certificate: " .. err
+    end
+    pkey_cdata, err = ssl.parse_pem_priv_key(self.pkey_pem)
+    if err then
+        return "failed to parse private key: " .. err
+    end
+    self.cert_cdata = cert_cdata
+    self.pkey_cdata = pkey_cdata
+    return nil
 end
 
 local cachestapling = {
@@ -277,21 +293,9 @@ local function request_cert(self, domain, timeout)
     if not (cert_json and headers) or req_err then
         return nil, req_err
     end
-
-    -- Convert certificate from PEM to DER format.
-    local cert_der, pkey_der, der_err
-    cert_der, der_err = ssl.cert_pem_to_der(cert_json["cert"])
-    if not cert_der or der_err then
-        return nil, "failed to convert certificate from PEM to DER: " .. (der_err or "nil")
-    end
-    pkey_der, der_err = ssl.priv_key_pem_to_der(cert_json["pkey"])
-    if not pkey_der or der_err then
-        return nil, "failed to convert private key from PEM to DER: " .. (der_err or "nil")
-    end
-
     local cert = cachecert:new({
-        cert_der = cert_der,
-        pkey_der = pkey_der,
+        cert_pem = cert_json["cert"],
+        pkey_pem = cert_json["pkey"],
         cert_type = cert_json["type"],
         fingerprint = cert_json["fingerprint"],
         expire_at = cert_json["expire_at"],
@@ -315,14 +319,14 @@ local function get_cert(self, domain)
     local cert
     if cert_buf then
         cert = cachecert:new():deserialize(cert_buf)
-        -- cached certificate TTL not expired
+        -- the cached certificate is within TTL, use it
         if cert.refresh_at > ngx_time() then
             return cert
         end
     end
 
     -- TTL expired, refresh it
-    -- lock to prevent multiple requests for same demain.
+    -- lock to prevent multiple requests for same domain.
     local lock, lock_err = _lock(lock_key, { exptime = lock_exptime, timeout = lock_exptime })
     if not lock then
         return nil, nil, lock_err
@@ -348,6 +352,10 @@ local function get_cert(self, domain)
     new_cert, req_err = request_cert(self, domain, lock_exptime - 10)
     if new_cert then
         -- Cache the newly requested certificate.
+        ngx_log(ngx_NOTICE, "requested certificate from backend server: " .. domain
+                .. " fingerprint= " .. new_cert["fingerprint"]
+                .. " expire_at= " .. new_cert["expire_at"]
+                .. " refresh_at= " .. new_cert["refresh_at"])
         cert = new_cert
         cert_buf = cert:serialize()
         local ok, cache_err, forcible = cache:set(cert_key, cert_buf)
@@ -376,7 +384,7 @@ local function get_cert(self, domain)
     return cert, is_expired, nil
 end
 
-local function set_cert(self, cert_der, pkey_der)
+local function set_cert(self, cert_cdata, pkey_cdata)
     local ok, err
 
     -- Clear the default fallback certificates (defined in the hard-coded nginx configuration).
@@ -386,13 +394,13 @@ local function set_cert(self, cert_der, pkey_der)
     end
 
     -- Set the public certificate chain.
-    ok, err = ssl.set_der_cert(cert_der)
+    ok, err = ssl.set_cert(cert_cdata)
     if not ok then
         return false, "failed to set certificate: " .. err
     end
 
     -- Set the private key.
-    ok, err = ssl.set_der_priv_key(pkey_der)
+    ok, err = ssl.set_priv_key(pkey_cdata)
     if not ok then
         return false, "failed to set private key: " .. err
     end
@@ -433,7 +441,7 @@ local function get_stapling(self, domain, fingerprint)
     local stapling
     if stapling_buf then
         stapling = cachestapling:new():deserialize(stapling_buf)
-        -- cached stapling TTL not expired
+        -- the cached stapling is within TTL, use it
         if stapling.refresh_at > ngx_time() then
             return stapling
         end
@@ -454,8 +462,10 @@ local function get_stapling(self, domain, fingerprint)
     end
     if stapling_buf then
         stapling = cachestapling:new():deserialize(stapling_buf)
-        _log_unlock(lock)
-        return stapling
+        if stapling.refresh_at > ngx_time() then
+            _log_unlock(lock)
+            return stapling
+        end
     end
 
     -- We are the first, request and cache OCSP stapling from backend server.
@@ -464,6 +474,10 @@ local function get_stapling(self, domain, fingerprint)
     if new_stapling then
         -- Cache the newly requested stapling.
         -- Consider time deviation, expire the backup 10 seconds before expiration.
+        ngx_log(ngx.NOTICE, "requested stapling from backend server: " .. domain
+                .. " fingerprint= " .. fingerprint
+                .. " expire_at= " .. new_stapling["expire_at"]
+                .. " refresh_at= " .. new_stapling["refresh_at"])
         stapling = new_stapling
         stapling_buf = stapling:serialize()
         local expire_ttl = stapling.expire_at - ngx_time() - 10
@@ -501,15 +515,9 @@ local function set_stapling(self, stapling)
     return true
 end
 
-local function get_from_lru_cache(domain)
+local function get_cert_from_lru_cache(domain)
     local cert_key = "cert:" .. domain
-    local cert = lru_cache:get(cert_key)
-    if not cert then
-        return
-    end
-    local stapling_key = "stapling:" .. domain .. ":" .. cert.fingerprint
-    local stapling = lru_cache:get(stapling_key)
-    return cert, stapling
+    return lru_cache:get(cert_key)
 end
 
 local function set_cert_to_lru_cache(domain, cert)
@@ -518,11 +526,6 @@ local function set_cert_to_lru_cache(domain, cert)
         local cert_key = "cert:" .. domain
         lru_cache:set(cert_key, cert, ttl)
     end
-end
-
-local function set_stapling_to_lru_cache(domain, fingerprint, stapling)
-    local stapling_key = "stapling:" .. domain .. ":" .. fingerprint
-    lru_cache:set(stapling_key, stapling)
 end
 
 function _M.ssl_certificate(self)
@@ -538,12 +541,27 @@ function _M.ssl_certificate(self)
         return
     end
 
-    local cert, stapling = get_from_lru_cache(domain)
+    local cert = get_cert_from_lru_cache(domain)
     local has_stapling, is_expired
     local err
     if not cert then
         cert, is_expired, err = get_cert(self, domain)
-        if cert and (not is_expired) then
+    end
+    -- Missed from LRU cache, and got from shared memory or backend.
+    if cert and (not cert.cert_cdata) then
+        err = cert:parse_cert_and_priv_key()
+        if err then
+            ngx_log(ngx_ERR, domain, ": ", err)
+            return
+        end
+
+        -- From now on, the certificate and private key PEM are not needed
+        -- anymore, drop them to save some memory space for LRU cache.
+        cert.cert_pem = nil
+        cert.pkey_pem = nil
+
+        -- Cache the parsed cdata to LRU cache.
+        if not is_expired then
             set_cert_to_lru_cache(domain, cert)
         end
     end
@@ -551,7 +569,7 @@ function _M.ssl_certificate(self)
         if (not is_expired) and cert.cert_type < 100 then
             has_stapling = true
         end
-        local ok, set_err = set_cert(self, cert.cert_der, cert.pkey_der)
+        local ok, set_err = set_cert(self, cert.cert_cdata, cert.pkey_cdata)
         if not ok then
             ngx_log(ngx_ERR, domain, ": ", set_err)
             return
@@ -565,12 +583,10 @@ function _M.ssl_certificate(self)
         return
     end
 
-    if not stapling then
-        stapling, err = get_stapling(self, domain, cert.fingerprint)
-        if stapling then
-            set_stapling_to_lru_cache(domain, cert.fingerprint, stapling)
-        end
-    end
+    -- Since the ocsp library supports only DER format, it doesn't make much
+    -- sense to use LRU cache here, so we don't use it for OCSP stapling.
+    local stapling
+    stapling, err = get_stapling(self, domain, cert.fingerprint)
     if stapling then
         local ok, set_err = set_stapling(self, stapling.stapling)
         if not ok then

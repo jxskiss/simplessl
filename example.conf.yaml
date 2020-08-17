@@ -33,6 +33,9 @@ self_signed:
     - "SSL Cert Server Self-Signed"
   cert_key: "self_signed"
 
+
+# Explanations
+
 # listen: The address ssl-cert-server should listen, be sure DON'T open the server to the world.
 # pid_file: The pid file path, it's used when doing graceful restarts.
 
