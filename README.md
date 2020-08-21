@@ -48,13 +48,6 @@ Although this program has been running for 3 years supporting my personal sites,
 and has not known deployment for large production systems.
 Thus anyone interested with this is HIGHLY RECOMMENDED to do testing in your environment.
 
-NOTE:
-
-The release version 0.1.x has a bug which may cause dead loop in OCSP stapling updater after months long running.
-The bug has not much impact on CPU usage, but will blow up the logging files.
-
-If anyone is using the old 0.1.x release, please consider upgrade to newer release as soon as possible.
-
 ## Installation
 
 The lua library is published with [OPM](https://opm.openresty.org/),
@@ -198,7 +191,15 @@ func main() {
 
 ## Change history
 
+### v0.4.1 @ 2020-08-23
+
+- new: support tls-alpn-01 challenge for Golang library
+- new: use cdata pointer instead of der for LRU cache
+- change: remove OCSP stapling from LRU cache which is unnecessary and not been properly refreshed
+
 ### v0.4.0 @ 2020-08-16
+
+Update: this release has known bugs, please upgrade to newer release.
 
 - new: support managed certificates
 - new: support self-signed certificate

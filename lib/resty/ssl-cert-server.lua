@@ -21,7 +21,7 @@ local table_insert = table.insert
 
 local err_204_no_content = "204 no content"
 
-local _M = { _VERSION = '0.4.0' }
+local _M = { _VERSION = '0.4.1' }
 
 -- We need to initialize the cache on the lua module level so that
 -- it can be shared by all the requests served by each nginx worker process.
