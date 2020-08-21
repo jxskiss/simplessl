@@ -19,19 +19,23 @@ import (
 	"golang.org/x/net/idna"
 )
 
-// certificate types
+// Certificate types
+//
+// - smaller than 100 for certificates which have OCSP stapling;
+// - equal or larger than 100 for certificates which don't have OCSP stapling;
 const (
 	LetsEncrypt = 0
 	Managed     = 1
 	SelfSigned  = 100
+	ALPNCert    = 101
 )
 
 var (
-	RspInvalidDomainName    = []byte("Invalid domain name.")
-	RspHostNotPermitted     = []byte("Host name not permitted.")
-	RspCertificateIsExpired = []byte("Certificate is expired.")
-	RspErrGetCertificate    = []byte("Error getting certificate.")
-	RspErrEncodeCertificate = []byte("Error encode certificate.")
+	RspInvalidDomainName     = []byte("Invalid domain name.")
+	RspHostNotPermitted      = []byte("Host name not permitted.")
+	RspCertificateIsExpired  = []byte("Certificate is expired.")
+	RspErrGetCertificate     = []byte("Error getting certificate.")
+	RspErrMarshalCertificate = []byte("Error marshal certificate.")
 )
 
 func (m *Manager) BuildRoutes(mux *http.ServeMux) {
@@ -59,7 +63,16 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 		w.Write(RspInvalidDomainName)
 		return
 	}
-	cert, certType, err := m.GetCertificateByName(domain)
+
+	var tlscert *tls.Certificate
+	var certType int
+	var isALPN01 = r.URL.Query().Get("alpn") == "1"
+	if isALPN01 {
+		certType = ALPNCert
+		tlscert, err = m.GetAutocertALPN01Certificate(domain)
+	} else {
+		tlscert, certType, err = m.GetCertificateByName(domain)
+	}
 	if err != nil {
 		if err == ErrHostNotPermitted {
 			log.Printf("[INFO] manager: domain name not permitted: domain= %s", domain)
@@ -73,26 +86,38 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var ttl = time.Until(cert.Leaf.NotAfter)
-	if ttl <= 0 {
-		log.Printf("[WARN] manager: got expired certificate: domain= %s", domain)
+	var ttlSeconds int
+	if !isALPN01 {
+		var ttl = time.Until(tlscert.Leaf.NotAfter)
+		if ttl <= 0 {
+			log.Printf("[WARN] manager: got expired certificate: domain= %s", domain)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write(RspCertificateIsExpired)
+			return
+		}
+		ttlSeconds = m.limitTTL(ttl)
+	}
+	response, err := marshalCertificate(tlscert, certType, ttlSeconds)
+	if err != nil {
+		log.Printf("[ERROR] manager: failed marshal certificate: domain= %s err= %v", domain, err)
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write(RspCertificateIsExpired)
+		w.Write(RspErrMarshalCertificate)
 		return
 	}
-	ttlSeconds := m.limitTTL(ttl)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(response)
+}
 
+func marshalCertificate(cert *tls.Certificate, certType int, ttl int) ([]byte, error) {
 	var (
+		err        error
 		certBuf    bytes.Buffer
 		privKeyBuf bytes.Buffer
 	)
 	for _, b := range cert.Certificate {
 		pb := &pem.Block{Type: "CERTIFICATE", Bytes: b}
 		if err = pem.Encode(&certBuf, pb); err != nil {
-			log.Printf("[ERROR] manager: failed encode certificate: domain= %s err= %v", domain, err)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write(RspErrEncodeCertificate)
-			return
+			return nil, fmt.Errorf("encode certificate: %v", err)
 		}
 	}
 	switch key := cert.PrivateKey.(type) {
@@ -104,14 +129,18 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("unknown private key type")
 	}
 	if err != nil {
-		log.Printf("[ERROR] manager: failed encode private key: domain= %v type= %T err= %v", domain, cert.PrivateKey, err)
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write(RspErrEncodeCertificate)
-		return
+		return nil, fmt.Errorf("encode private key: %v", err)
 	}
 
-	fingerprint := sha1.Sum(cert.Leaf.Raw)
-	response, _ := json.Marshal(struct {
+	// Leaf and fingerprint are not needed for tls-alpn-01 certificate.
+	var fingerprint string
+	var expireAt int64
+	if cert.Leaf != nil {
+		checksum := sha1.Sum(cert.Leaf.Raw)
+		fingerprint = hex.EncodeToString(checksum[:])
+		expireAt = cert.Leaf.NotAfter.Unix()
+	}
+	response := struct {
 		Type        int    `json:"type"`
 		Cert        string `json:"cert"`
 		PKey        string `json:"pkey"`
@@ -122,13 +151,11 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 		Type:        certType,
 		Cert:        string(certBuf.Bytes()),
 		PKey:        string(privKeyBuf.Bytes()),
-		Fingerprint: hex.EncodeToString(fingerprint[:]),
-		ExpireAt:    cert.Leaf.NotAfter.Unix(),
-		TTL:         ttlSeconds,
-	}) // error ignored, shall not fail
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(response)
+		Fingerprint: fingerprint,
+		ExpireAt:    expireAt,
+		TTL:         ttl,
+	}
+	return json.Marshal(response)
 }
 
 func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, certType int, err error) {
@@ -140,7 +167,7 @@ func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, c
 	// check auto issued certificates from Let's Encrypt
 	if err = m.m.HostPolicy(context.Background(), name); err == nil {
 		certType = LetsEncrypt
-		tlscert, err = m.GetCertificate(name)
+		tlscert, err = m.GetAutocertCertificate(name)
 	} else
 	// check self-signed
 	if IsSelfSignedAllowed(name) {

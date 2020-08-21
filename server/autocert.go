@@ -145,7 +145,7 @@ func (m *Manager) helloInfo(domain string) *tls.ClientHelloInfo {
 	return helloInfo
 }
 
-func (m *Manager) GetCertificate(name string) (*tls.Certificate, error) {
+func (m *Manager) GetAutocertCertificate(name string) (*tls.Certificate, error) {
 	helloInfo := m.helloInfo(name)
 	cert, err := m.m.GetCertificate(helloInfo)
 	if err != nil {
@@ -159,6 +159,12 @@ func (m *Manager) GetCertificate(name string) (*tls.Certificate, error) {
 	})
 
 	return cert, nil
+}
+
+func (m *Manager) GetAutocertALPN01Certificate(name string) (*tls.Certificate, error) {
+	helloInfo := m.helloInfo(name)
+	helloInfo.SupportedProtos = []string{acme.ALPNProto}
+	return m.m.GetCertificate(helloInfo)
 }
 
 type lockedMathRand struct {
