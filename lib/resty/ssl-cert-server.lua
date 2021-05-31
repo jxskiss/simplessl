@@ -366,15 +366,20 @@ local function get_cert(self, domain)
             ngx_log(ngx_ERR, domain, ": failed to set certificate cache: ", cache_err)
         end
     else
-        -- Since certificate renewal happens far before expired on backend server,
-        -- most probably the previous certificate is valid, we use it if it is available.
-        -- This avoids further requests within next cache period triggering certificate
-        -- requests to backend, which may slow down nginx and rise up pressure on busy site.
-        -- Also we consider an recently-expired certificate is more friendly to our users
-        -- than fallback to self-signed certificate.
-        if cert.expire_at <= ngx_time() then
+        if cert then
+            -- Since certificate renewal happens far before expired on backend server,
+            -- most probably the previous certificate is valid, we use it if it is available.
+            -- This avoids further requests within next cache period triggering certificate
+            -- requests to backend, which may slow down nginx and rise up pressure on busy site.
+            -- Also we consider an recently-expired certificate is more friendly to our users
+            -- than fallback to self-signed certificate.
+            if cert.expire_at <= ngx_time() then
+                is_expired = true
+                ngx_log(ngx_ERR, domain, ": fallback to expired certificate")
+            end
+        else
             is_expired = true
-            ngx_log(ngx_ERR, domain, ": fallback to expired certificate")
+            ngx_log(ngx_ERR, domain, ": fallback to expired certificate (no cert)")
         end
     end
 
