@@ -372,9 +372,9 @@ local function get_cert(self, domain)
         -- requests to backend, which may slow down nginx and rise up pressure on busy site.
         -- Also we consider an recently-expired certificate is more friendly to our users
         -- than fallback to self-signed certificate.
-        if cert.expire_at <= ngx_time() then
+        if cert and cert.expire_at <= ngx_time() then
             is_expired = true
-            ngx_log(ngx_ERR, domain, ": fallback to expired certificate")
+            ngx_log(ngx_WARN, domain, ": fallback to expired certificate")
         end
     end
 
@@ -547,6 +547,7 @@ function _M.ssl_certificate(self)
     if not cert then
         cert, is_expired, err = get_cert(self, domain)
     end
+
     -- Missed from LRU cache, and got from shared memory or backend.
     if cert and (not cert.cert_cdata) then
         err = cert:parse_cert_and_priv_key()
@@ -565,6 +566,8 @@ function _M.ssl_certificate(self)
             set_cert_to_lru_cache(domain, cert)
         end
     end
+
+    -- Got from LRU cache, the certificate may be expired.
     if cert then
         if (not is_expired) and cert.cert_type < 100 then
             has_stapling = true
@@ -575,7 +578,12 @@ function _M.ssl_certificate(self)
             return
         end
     else
-        ngx_log(ngx_ERR, domain, ": ", err)
+        -- No cached certificate is available, fallback to the default
+        -- certificate configured in the configuration file.
+        if err then
+            ngx_log(ngx_ERR, domain, ": ", err)
+        end
+        ngx_log(ngx_WARN, domain, ": fallback to configured default certificate")
         return
     end
 
