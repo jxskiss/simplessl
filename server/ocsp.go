@@ -29,13 +29,18 @@ var (
 	ErrCertfuncNotFound  = errors.New("certificate func not found")
 )
 
-var OCSPManager = &ocspManager{}
+var OCSPManager = NewOCSPManager()
 
-func init() {
-	OCSPManager.certMap.Store(make(map[string]func() (*tls.Certificate, error)))
-	OCSPManager.stateMap = make(map[string]*ocspState)
-	OCSPManager.stateToken = make(map[string]struct{})
-	go OCSPManager.listenCertChanges()
+func NewOCSPManager() *ocspManager {
+	mgr := &ocspManager{
+		stateMap:   make(map[string]*ocspState),
+		stateToken: make(map[string]struct{}),
+		errMap:     make(map[string]*errlog),
+	}
+	certMap := make(map[string]func() (*tls.Certificate, error))
+	mgr.certMap.Store(certMap)
+	go mgr.listenCertChanges()
+	return mgr
 }
 
 type ocspManager struct {
@@ -46,6 +51,14 @@ type ocspManager struct {
 	stateMu    sync.RWMutex
 	stateMap   map[string]*ocspState
 	stateToken map[string]struct{}
+
+	errMu  sync.RWMutex
+	errMap map[string]*errlog
+}
+
+type errlog struct {
+	msg  string
+	time int64
 }
 
 func (m *ocspManager) GetOCSPStapling(keyName string, fingerprint string) ([]byte, time.Time, error) {
@@ -104,11 +117,7 @@ func (m *ocspManager) listenCertChanges() {
 	ticker := time.NewTicker(certsCheckInterval)
 	for range ticker.C {
 		certMap := m.getCertMap()
-		keyNames := make([]string, 0, len(certMap))
 		for keyName := range certMap {
-			keyNames = append(keyNames, keyName)
-		}
-		for _, keyName := range keyNames {
 			token <- struct{}{}
 			go func(keyName string) {
 				defer func() { <-token }()
@@ -133,8 +142,7 @@ func (m *ocspManager) touchState(keyName string) {
 			return
 		}
 		// the cached state is outdated, remove it
-		state.renewal.stop()
-		m.deleteState(keyName)
+		m.deleteState(keyName, state)
 	}
 
 	// allow only single worker to do request for a single certificate
@@ -153,11 +161,45 @@ func (m *ocspManager) touchState(keyName string) {
 	}
 	der, response, err := requestOCSPStapling(ctx, cert, issuer)
 	if err != nil {
-		log.Printf("[ERROR] ocsp manager: failed request OCSP stapling: key_name= %s, err= %v", keyName, err)
+		m.logRequestError(keyName, err)
 		return
 	}
+	m.logRequestSuccess(keyName)
 	state = m.setState(keyName, cert, issuer, der, response)
 	return
+}
+
+// logRequestError suppresses error logging, it logs at most once
+// for an error message per minute for each keyName.
+//
+// When a certificate is newly issued and the OCSP stapling is not ready,
+// the Akamai CDN may returns and caches an "unauthorized" error, it may
+// cause an error message every second. See issue #3.
+func (m *ocspManager) logRequestError(keyName string, err error) {
+	errmsg := err.Error()
+	nowsec := time.Now().Unix()
+	shouldLog := false
+
+	m.errMu.Lock()
+	elog := m.errMap[keyName]
+	if elog == nil || elog.msg != err.Error() || nowsec-elog.time > 60 {
+		shouldLog = true
+		m.errMap[keyName] = &errlog{
+			msg:  errmsg,
+			time: nowsec,
+		}
+	}
+	m.errMu.Unlock()
+	if shouldLog {
+		log.Printf("[ERROR] ocsp manager: failed request OCSP stapling: key_name= %s err= %v", keyName, err)
+	}
+}
+
+func (m *ocspManager) logRequestSuccess(keyName string) {
+	m.errMu.Lock()
+	delete(m.errMap, keyName)
+	m.errMu.Unlock()
+	log.Printf("[INFO] ocsp manager: request OCSP stapling success: key_name= %s", keyName)
 }
 
 func (m *ocspManager) markStateToken(keyName string) bool {
@@ -183,9 +225,15 @@ func (m *ocspManager) lookupState(keyName string) (*ocspState, bool) {
 	return state, ok
 }
 
-func (m *ocspManager) deleteState(keyName string) {
+func (m *ocspManager) deleteState(keyName string, state *ocspState) {
+	if state.renewal != nil {
+		state.renewal.stop()
+	}
 	m.stateMu.Lock()
-	delete(m.stateMap, keyName)
+	oldState, ok := m.stateMap[keyName]
+	if ok && state == oldState {
+		delete(m.stateMap, keyName)
+	}
 	m.stateMu.Unlock()
 }
 
@@ -295,9 +343,10 @@ func (or *ocspRenewal) next(expiry time.Time) time.Duration {
 	// add a bit randomness to renew deadline
 	n := pseudoRand.int63n(int64(renewJitter))
 	d -= time.Duration(n)
-	if d < 0 {
-		// force sleep a while before next update
-		n := pseudoRand.int63n(int64(time.Minute))
+
+	// force sleep at least one minute before next update
+	if d < time.Minute {
+		n = pseudoRand.int63n(int64(time.Minute))
 		d = time.Minute + time.Duration(n)
 	}
 	return d
