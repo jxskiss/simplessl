@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -21,13 +21,13 @@ type rediscache struct {
 }
 
 func (c *rediscache) Get(ctx context.Context, key string) ([]byte, error) {
-	return c.client.Get(key).Bytes()
+	return c.client.Get(ctx, key).Bytes()
 }
 
 func (c *rediscache) Put(ctx context.Context, key string, data []byte) error {
-	return c.client.Set(key, data, 0).Err()
+	return c.client.Set(ctx, key, data, 0).Err()
 }
 
 func (c *rediscache) Delete(ctx context.Context, key string) error {
-	return c.client.Del(key).Err()
+	return c.client.Del(ctx, key).Err()
 }

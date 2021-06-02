@@ -9,22 +9,18 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"golang.org/x/crypto/acme"
 	"io"
 	mathrand "math/rand"
 	"net"
 	"net/http"
 	"regexp"
-	"sync"
 	"time"
 
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
 
 const stagingDirectoryURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
-
-// pseudoRand is safe for concurrent use.
-var pseudoRand *lockedMathRand
 
 // httpClient is used to do http request instead of the default http.DefaultClient.
 // The OCSP server of Let's Encrypt certificates seems working improperly, gives
@@ -34,7 +30,7 @@ var pseudoRand *lockedMathRand
 var httpClient *http.Client
 
 func init() {
-	pseudoRand = &lockedMathRand{rnd: mathrand.New(mathrand.NewSource(timeNow().UnixNano()))}
+	mathrand.Seed(timeNow().UnixNano())
 	httpClient = &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
@@ -167,17 +163,7 @@ func (m *Manager) GetAutocertALPN01Certificate(name string) (*tls.Certificate, e
 	return m.m.GetCertificate(helloInfo)
 }
 
-type lockedMathRand struct {
-	sync.Mutex
-	rnd *mathrand.Rand
-}
-
-func (r *lockedMathRand) int63n(max int64) int64 {
-	r.Lock()
-	n := r.rnd.Int63n(max)
-	r.Unlock()
-	return n
-}
+var rand63n = mathrand.Int63n
 
 var testOCSPDidUpdateLoop = func(next time.Duration, err error) {}
 

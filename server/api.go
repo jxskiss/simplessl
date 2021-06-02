@@ -47,7 +47,7 @@ func (m *Manager) BuildRoutes(mux *http.ServeMux) {
 	mux.Handle("/.well-known/acme-challenge/", _mw(m.m.HTTPHandler(nil)))
 }
 
-// HandlerCertificate handlers requests of SSL certificate.
+// HandleCertificate handlers requests of SSL certificate.
 //
 // Possible responses are:
 // - 200 with the certificate data as response
@@ -249,7 +249,7 @@ func (m *Manager) limitTTL(ttl time.Duration) int {
 	if ttlSeconds <= 2*jitter {
 		jitter = ttlSeconds / 2
 	}
-	n := pseudoRand.int63n(jitter)
+	n := rand63n(jitter)
 	if n < ttlSeconds {
 		ttlSeconds -= n
 	}

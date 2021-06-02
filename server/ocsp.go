@@ -321,7 +321,7 @@ func (or *ocspRenewal) update() {
 	if err != nil {
 		log.Printf("[ERROR] ocsp renewal: failed request OCSP stapling: key_name= %s err= %v", or.keyName, err)
 		next = renewJitter / 2
-		next += time.Duration(pseudoRand.int63n(int64(next)))
+		next += time.Duration(rand63n(int64(next)))
 	} else {
 		log.Printf("[INFO] ocsp renewal: request OCSP stapling success: key_name= %s next_update= %s", or.keyName, response.NextUpdate.Format(time.RFC3339Nano))
 		state.Lock()
@@ -341,12 +341,12 @@ func (or *ocspRenewal) next(expiry time.Time) time.Duration {
 		d = ttl - renewBefore
 	}
 	// add a bit randomness to renew deadline
-	n := pseudoRand.int63n(int64(renewJitter))
+	n := rand63n(int64(renewJitter))
 	d -= time.Duration(n)
 
 	// force sleep at least one minute before next update
 	if d < time.Minute {
-		n = pseudoRand.int63n(int64(time.Minute))
+		n = rand63n(int64(time.Minute))
 		d = time.Minute + time.Duration(n)
 	}
 	return d
