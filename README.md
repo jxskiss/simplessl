@@ -13,20 +13,20 @@ I got inspires and stole some code from the awesome project [lua-resty-auto-ssl]
 ## Centric certificate server
 
 Compared to other similar projects, this project provides a centric certificate server
-to manage all your certificates (both auto issued or manually managed, and self signed) in one place.
+to manage all your certificates (both auto issued or manually managed, and self-signed) in one place.
 The OpenResty plugin and Golang TLS config library acts as client to the server.
 
 By this design, there are several advantages:
 
 1. Offload ACME related work and communication with storage to the backend Golang server,
    let Nginx/OpenResty do what it is designed for and best at;
-1. It's more friendly to distributed deployments, one can manage all certificates in just one place,
+1. It's more friendly to distributed deployments, one can manage all certificates in a single place,
    the OpenResty plugin and Golang library deployment is simple and straightforward;
-   and you get only single one certificate for a domain, and not as much certificates as your
+   you get single certificate for a domain, not as many certificates as your
    web server instances (as some other similar project does);
-1. Golang program is considered far more easier to maintain and do troubleshooting than
-   doing ACME work and storage within Lua;
-1. Also, Golang program is considered far more easier to extend to support new type of storage,
+1. Golang program is considered easier to maintain and do troubleshooting than
+   doing ACME work and storage with Lua;
+1. Also, Golang program is considered easier to extend to support new type of storage,
    or new features (eg. security related things);
 
 A multi-layered cache mechanism is used to help frontend Nginx and Golang web servers
@@ -190,6 +190,12 @@ func main() {
 - [lua-resty-http](https://github.com/pintsized/lua-resty-http)
 
 ## Change history
+
+### v0.4.2 @ 2021-06-02
+
+- fix: request failed when only configured default cert available, #2
+- fix: suppress log messages when the OCSP server returns error, #3
+- change: upgrade dependency to latest
 
 ### v0.4.1 @ 2020-08-23
 
