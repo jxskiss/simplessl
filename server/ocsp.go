@@ -154,7 +154,7 @@ func (m *ocspManager) touchState(keyName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	issuer, err := x509.ParseCertificate(cert.Certificate[len(cert.Certificate)-1])
+	issuer, err := x509.ParseCertificate(cert.Certificate[len(cert.Certificate)-2])
 	if err != nil {
 		log.Printf("[ERROR] ocsp manager: failed parse certificate: key_name= %s err= %v", keyName, err)
 		return
