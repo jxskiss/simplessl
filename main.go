@@ -18,7 +18,7 @@ import (
 	"github.com/jxskiss/ssl-cert-server/server"
 )
 
-const VERSION = "0.4.2"
+const VERSION = "0.4.3"
 
 // StringArray implements flag.Value interface.
 type StringArray []string
