@@ -17,16 +17,19 @@ import (
 
 var DefaultSelfSignedOrganization = []string{"SSL Cert Server Self-Signed"}
 
+type redisConfig struct {
+	Addr   string `yaml:"addr"`   // default: "127.0.0.1:6379"
+	Prefix string `yaml:"prefix"` // default: ""
+}
+
 type config struct {
 	Listen  string `yaml:"listen"`   // default: "127.0.0.1:8999"
 	PIDFile string `yaml:"pid_file"` // default: "ssl-cert-server.pid"
 
 	Storage struct {
-		Type     string `yaml:"type"`      // dir_cache | redis, default: dir_cache
-		DirCache string `yaml:"dir_cache"` // default: "./secret-dir"
-		Redis    struct {
-			Addr string `yaml:"addr"` // default: "127.0.0.1:6379"
-		} `yaml:"redis"`
+		Type     string      `yaml:"type"`      // dir_cache | redis, default: dir_cache
+		DirCache string      `yaml:"dir_cache"` // default: "./secret-dir"
+		Redis    redisConfig `yaml:"redis"`
 
 		// Cache is used by Manager to store and retrieve previously obtained certificates
 		// and other account data as opaque blobs.
@@ -166,7 +169,7 @@ func InitConfig() {
 	case "dir_cache":
 		Cfg.Storage.Cache, _ = NewDirCache(Cfg.Storage.DirCache)
 	case "redis":
-		Cfg.Storage.Cache, err = NewRedisCache(Cfg.Storage.Redis.Addr)
+		Cfg.Storage.Cache, err = NewRedisCache(Cfg.Storage.Redis)
 		if err != nil {
 			log.Fatalf("[FATAL] server: failed setup redis storage: %v", err)
 		}

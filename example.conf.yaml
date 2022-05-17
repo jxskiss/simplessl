@@ -6,6 +6,7 @@ storage:
   dir_cache: "./secret-dir"
   redis:
     addr: "127.0.0.1:6379"
+    prefix: ""
 
 managed:
   - pattern: "abc\\.example\\.com"
@@ -42,7 +43,9 @@ self_signed:
 # storage: Cache storage settings.
 # storage.type: "dir_cache" or "redis"
 # storage.dir_cache: If type is "dir_cache", which directory to store cached certificate files.
-# storage.redis: If type is "redis", the connection settings of Redis.
+# storage.redis: If type is "redis", the settings of Redis.
+# storage.redis.addr: The connection string of Redis.
+# storage.redis.prefix: An optional string to use as prefix of certificate keys.
 
 # managed: Managed certificates settings.
 # managed.pattern: pattern to match domain names
