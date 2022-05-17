@@ -61,4 +61,4 @@ self_signed:
 # self_signed.check_sni: whether check SNI name for self-signed certificate (default false)
 # self_signed.valid_days: how may days to set the certificate when generating self-signed certificate
 # self_signed.organization: organization to set the certificate when generating self-signed certificate
-# self_signed.cert_key: the key to put generated self signed certificate into cache storage
+# self_signed.cert_key: the key to put generated self-signed certificate into cache storage

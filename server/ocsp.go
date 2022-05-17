@@ -34,8 +34,7 @@ var OCSPManager = NewOCSPManager()
 func NewOCSPManager() *ocspManager {
 	mgr := &ocspManager{
 		stateMap:   make(map[string]*ocspState),
-		stateToken: make(map[string]struct{}),
-		errMap:     make(map[string]*errlog),
+		stateToken: make(map[string]uint64),
 	}
 	certMap := make(map[string]func() (*tls.Certificate, error))
 	mgr.certMap.Store(certMap)
@@ -50,15 +49,9 @@ type ocspManager struct {
 
 	stateMu    sync.RWMutex
 	stateMap   map[string]*ocspState
-	stateToken map[string]struct{}
+	stateToken map[string]uint64
 
-	errMu  sync.RWMutex
-	errMap map[string]*errlog
-}
-
-type errlog struct {
-	msg  string
-	time int64
+	tokenIncr uint64
 }
 
 func (m *ocspManager) GetOCSPStapling(keyName string, fingerprint string) ([]byte, time.Time, error) {
@@ -136,6 +129,10 @@ func (m *ocspManager) touchState(keyName string) {
 		log.Printf("[ERROR] ocsp manager: failed get certifcate: key_name= %s err= %v", keyName, err)
 		return
 	}
+	if len(cert.Leaf.OCSPServer) == 0 {
+		return
+	}
+
 	state, ok := m.lookupState(keyName)
 	if ok {
 		if bytes.Equal(state.cert.Certificate[0], cert.Certificate[0]) {
@@ -146,10 +143,11 @@ func (m *ocspManager) touchState(keyName string) {
 	}
 
 	// allow only single worker to do request for a single certificate
-	if !m.markStateToken(keyName) {
+	token, ok := m.markStateToken(keyName)
+	if !ok {
 		return
 	}
-	defer m.unmarkStateToken(keyName)
+	defer m.unmarkStateToken(keyName, token)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -161,60 +159,30 @@ func (m *ocspManager) touchState(keyName string) {
 	}
 	der, response, err := requestOCSPStapling(ctx, cert, issuer)
 	if err != nil {
-		m.logRequestError(keyName, err)
+		log.Printf("[ERROR] ocsp manager: failed request OCSP stapling: key_name= %s err= %v", keyName, err)
 		return
 	}
-	m.logRequestSuccess(keyName)
+	log.Printf("[INFO] ocsp manager: request OCSP stapling success: key_name= %s", keyName)
 	state = m.setState(keyName, cert, issuer, der, response)
 	return
 }
 
-// logRequestError suppresses error logging, it logs at most once
-// for an error message per minute for each keyName.
-//
-// When a certificate is newly issued and the OCSP stapling is not ready,
-// the Akamai CDN may returns and caches an "unauthorized" error, it may
-// cause an error message every second. See issue #3.
-func (m *ocspManager) logRequestError(keyName string, err error) {
-	errmsg := err.Error()
-	nowsec := time.Now().Unix()
-	shouldLog := false
-
-	m.errMu.Lock()
-	elog := m.errMap[keyName]
-	if elog == nil || elog.msg != err.Error() || nowsec-elog.time > 60 {
-		shouldLog = true
-		m.errMap[keyName] = &errlog{
-			msg:  errmsg,
-			time: nowsec,
-		}
-	}
-	m.errMu.Unlock()
-	if shouldLog {
-		log.Printf("[ERROR] ocsp manager: failed request OCSP stapling: key_name= %s err= %v", keyName, err)
-	}
-}
-
-func (m *ocspManager) logRequestSuccess(keyName string) {
-	m.errMu.Lock()
-	delete(m.errMap, keyName)
-	m.errMu.Unlock()
-	log.Printf("[INFO] ocsp manager: request OCSP stapling success: key_name= %s", keyName)
-}
-
-func (m *ocspManager) markStateToken(keyName string) bool {
+func (m *ocspManager) markStateToken(keyName string) (token uint64, ok bool) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	if _, ok := m.stateToken[keyName]; ok {
-		return false
+		return 0, false
 	}
-	m.stateToken[keyName] = struct{}{}
-	return true
+	token = atomic.AddUint64(&m.tokenIncr, 1)
+	m.stateToken[keyName] = token
+	return token, true
 }
 
-func (m *ocspManager) unmarkStateToken(keyName string) {
+func (m *ocspManager) unmarkStateToken(keyName string, token uint64) {
 	m.stateMu.Lock()
-	delete(m.stateToken, keyName)
+	if lockToken, ok := m.stateToken[keyName]; ok && token == lockToken {
+		delete(m.stateToken, keyName)
+	}
 	m.stateMu.Unlock()
 }
 
@@ -311,6 +279,9 @@ func (or *ocspRenewal) update() {
 	if !ok || state.renewal != or {
 		// state has been removed / replaced, stop the old renewal
 		or.timer = nil
+		return
+	}
+	if len(state.cert.Leaf.OCSPServer) == 0 {
 		return
 	}
 
