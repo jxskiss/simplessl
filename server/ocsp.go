@@ -9,12 +9,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/jxskiss/gopkg/v2/zlog"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/ocsp"
 )
 
@@ -29,12 +30,11 @@ var (
 	ErrCertfuncNotFound  = errors.New("certificate func not found")
 )
 
-var OCSPManager = NewOCSPManager()
-
-func NewOCSPManager() *ocspManager {
-	mgr := &ocspManager{
+func NewOCSPManager() *OCSPManager {
+	mgr := &OCSPManager{
 		stateMap:   make(map[string]*ocspState),
 		stateToken: make(map[string]uint64),
+		log:        zlog.Named("ocspManager").Sugar(),
 	}
 	certMap := make(map[string]func() (*tls.Certificate, error))
 	mgr.certMap.Store(certMap)
@@ -42,7 +42,7 @@ func NewOCSPManager() *ocspManager {
 	return mgr
 }
 
-type ocspManager struct {
+type OCSPManager struct {
 	// copy-on-write map
 	certMu  sync.Mutex
 	certMap atomic.Value // map[string]func() (*tls.Certificate, error)
@@ -52,9 +52,11 @@ type ocspManager struct {
 	stateToken map[string]uint64
 
 	tokenIncr uint64
+
+	log *zap.SugaredLogger
 }
 
-func (m *ocspManager) GetOCSPStapling(keyName string, fingerprint string) ([]byte, time.Time, error) {
+func (m *OCSPManager) GetOCSPStapling(keyName string, fingerprint string) ([]byte, time.Time, error) {
 	state, ok := m.lookupState(keyName)
 	if ok {
 		fp := sha1.Sum(state.cert.Leaf.Raw)
@@ -66,11 +68,11 @@ func (m *ocspManager) GetOCSPStapling(keyName string, fingerprint string) ([]byt
 	}
 
 	// don't block request
-	log.Printf("[INFO] ocsp manager: OCSP stapling not cached: key_name= %v", keyName)
+	m.log.Infof("OCSP stapling not cached: keyName= %v", keyName)
 	return nil, time.Time{}, ErrStaplingNotCached
 }
 
-func (m *ocspManager) Watch(keyName string, certfunc func() (*tls.Certificate, error)) {
+func (m *OCSPManager) Watch(keyName string, certfunc func() (*tls.Certificate, error)) {
 	certMap := m.getCertMap()
 	if certMap[keyName] != nil {
 		return
@@ -78,11 +80,11 @@ func (m *ocspManager) Watch(keyName string, certfunc func() (*tls.Certificate, e
 	go m.watchNewCert(keyName, certfunc)
 }
 
-func (m *ocspManager) getCertMap() map[string]func() (*tls.Certificate, error) {
+func (m *OCSPManager) getCertMap() map[string]func() (*tls.Certificate, error) {
 	return m.certMap.Load().(map[string]func() (*tls.Certificate, error))
 }
 
-func (m *ocspManager) watchNewCert(keyName string, certfunc func() (*tls.Certificate, error)) {
+func (m *OCSPManager) watchNewCert(keyName string, certfunc func() (*tls.Certificate, error)) {
 	m.certMu.Lock()
 	defer m.certMu.Unlock()
 	oldCertMap := m.getCertMap()
@@ -96,7 +98,7 @@ func (m *ocspManager) watchNewCert(keyName string, certfunc func() (*tls.Certifi
 	go m.touchState(keyName)
 }
 
-func (m *ocspManager) getCertificate(keyName string) (*tls.Certificate, error) {
+func (m *OCSPManager) getCertificate(keyName string) (*tls.Certificate, error) {
 	certfunc := m.getCertMap()[keyName]
 	if certfunc != nil {
 		return certfunc()
@@ -104,7 +106,7 @@ func (m *ocspManager) getCertificate(keyName string) (*tls.Certificate, error) {
 	return nil, ErrCertfuncNotFound
 }
 
-func (m *ocspManager) listenCertChanges() {
+func (m *OCSPManager) listenCertChanges() {
 	// at most 50 concurrent goroutines
 	token := make(chan struct{}, 50)
 	ticker := time.NewTicker(certsCheckInterval)
@@ -123,10 +125,10 @@ func (m *ocspManager) listenCertChanges() {
 // touchState checks if OCSP stapling state for the given keyName is cached.
 // If not, it will request the OCSP stapling from the certificate's OCSP
 // server and cache the stateMap in Manager.
-func (m *ocspManager) touchState(keyName string) {
+func (m *OCSPManager) touchState(keyName string) {
 	cert, err := m.getCertificate(keyName)
 	if err != nil {
-		log.Printf("[ERROR] ocsp manager: failed get certifcate: key_name= %s err= %v", keyName, err)
+		m.log.Errorf("failed get certifcate: keyName= %s err= %v", keyName, err)
 		return
 	}
 	if len(cert.Leaf.OCSPServer) == 0 {
@@ -154,20 +156,20 @@ func (m *ocspManager) touchState(keyName string) {
 
 	issuer, err := x509.ParseCertificate(cert.Certificate[1])
 	if err != nil {
-		log.Printf("[ERROR] ocsp manager: failed parse certificate: key_name= %s err= %v", keyName, err)
+		m.log.Errorf("failed parse certificate: keyName= %s err= %v", keyName, err)
 		return
 	}
 	der, response, err := requestOCSPStapling(ctx, cert, issuer)
 	if err != nil {
-		log.Printf("[ERROR] ocsp manager: failed request OCSP stapling: key_name= %s err= %v", keyName, err)
+		m.log.Errorf("failed request OCSP stapling: keyName= %s err= %v", keyName, err)
 		return
 	}
-	log.Printf("[INFO] ocsp manager: request OCSP stapling success: key_name= %s", keyName)
+	m.log.Infof("request OCSP stapling success: keyName= %s", keyName)
 	state = m.setState(keyName, cert, issuer, der, response)
 	return
 }
 
-func (m *ocspManager) markStateToken(keyName string) (token uint64, ok bool) {
+func (m *OCSPManager) markStateToken(keyName string) (token uint64, ok bool) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	if _, ok := m.stateToken[keyName]; ok {
@@ -178,7 +180,7 @@ func (m *ocspManager) markStateToken(keyName string) (token uint64, ok bool) {
 	return token, true
 }
 
-func (m *ocspManager) unmarkStateToken(keyName string, token uint64) {
+func (m *OCSPManager) unmarkStateToken(keyName string, token uint64) {
 	m.stateMu.Lock()
 	if lockToken, ok := m.stateToken[keyName]; ok && token == lockToken {
 		delete(m.stateToken, keyName)
@@ -186,14 +188,14 @@ func (m *ocspManager) unmarkStateToken(keyName string, token uint64) {
 	m.stateMu.Unlock()
 }
 
-func (m *ocspManager) lookupState(keyName string) (*ocspState, bool) {
+func (m *OCSPManager) lookupState(keyName string) (*ocspState, bool) {
 	m.stateMu.RLock()
 	state, ok := m.stateMap[keyName]
 	m.stateMu.RUnlock()
 	return state, ok
 }
 
-func (m *ocspManager) deleteState(keyName string, state *ocspState) {
+func (m *OCSPManager) deleteState(keyName string, state *ocspState) {
 	if state.renewal != nil {
 		state.renewal.stop()
 	}
@@ -205,7 +207,7 @@ func (m *ocspManager) deleteState(keyName string, state *ocspState) {
 	m.stateMu.Unlock()
 }
 
-func (m *ocspManager) setState(
+func (m *OCSPManager) setState(
 	keyName string,
 	cert *tls.Certificate,
 	issuer *x509.Certificate,
@@ -215,7 +217,7 @@ func (m *ocspManager) setState(
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 
-	renewal := &ocspRenewal{manager: m, keyName: keyName}
+	renewal := newOCSPRenewal(m, keyName)
 	state := &ocspState{
 		cert:       cert,
 		issuer:     issuer,
@@ -240,11 +242,21 @@ type ocspState struct {
 }
 
 type ocspRenewal struct {
-	manager *ocspManager
+	manager *OCSPManager
 	keyName string
 
 	timerMu sync.Mutex
 	timer   *time.Timer
+
+	log *zap.SugaredLogger
+}
+
+func newOCSPRenewal(mgr *OCSPManager, keyName string) *ocspRenewal {
+	return &ocspRenewal{
+		manager: mgr,
+		keyName: keyName,
+		log:     zlog.Named("ocspRenewal").Sugar(),
+	}
 }
 
 func (or *ocspRenewal) start(next time.Time) {
@@ -254,7 +266,7 @@ func (or *ocspRenewal) start(next time.Time) {
 		return
 	}
 	or.timer = time.AfterFunc(or.next(next), or.update)
-	log.Printf("[INFO] ocsp renewal: started OCSP stapling renewal: key_name= %s next_update= %s", or.keyName, next.Format(time.RFC3339Nano))
+	or.log.Infof("started OCSP stapling renewal: keyName= %s nextUpdate= %s", or.keyName, next.Format(time.RFC3339Nano))
 }
 
 func (or *ocspRenewal) stop() {
@@ -265,7 +277,7 @@ func (or *ocspRenewal) stop() {
 	}
 	or.timer.Stop()
 	or.timer = nil
-	log.Printf("[INFO] ocsp renewal: stoped OCSP stapling renewal: key_name= %s", or.keyName)
+	or.log.Infof("stopped OCSP stapling renewal: keyName= %s", or.keyName)
 }
 
 func (or *ocspRenewal) update() {
@@ -290,11 +302,11 @@ func (or *ocspRenewal) update() {
 	defer cancel()
 	der, response, err := requestOCSPStapling(ctx, state.cert, state.issuer)
 	if err != nil {
-		log.Printf("[ERROR] ocsp renewal: failed request OCSP stapling: key_name= %s err= %v", or.keyName, err)
+		or.log.Errorf("failed request OCSP stapling: keyName= %s err= %v", or.keyName, err)
 		next = renewJitter / 2
 		next += time.Duration(rand63n(int64(next)))
 	} else {
-		log.Printf("[INFO] ocsp renewal: request OCSP stapling success: key_name= %s next_update= %s", or.keyName, response.NextUpdate.Format(time.RFC3339Nano))
+		or.log.Infof("request OCSP stapling success: keyName= %s nextUpdate= %s", or.keyName, response.NextUpdate.Format(time.RFC3339Nano))
 		state.Lock()
 		defer state.Unlock()
 		state.ocspDER = der

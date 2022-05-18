@@ -2,14 +2,13 @@ package server
 
 import (
 	"context"
-	"flag"
 	"io/ioutil"
-	"log"
 	"os"
 	"reflect"
 	"regexp"
 	"strings"
 
+	"github.com/jxskiss/gopkg/v2/zlog"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 	"gopkg.in/yaml.v2"
@@ -105,7 +104,7 @@ func (p *config) buildHostPolicy() {
 		for i, p := range p.LetsEncrypt.REPatterns {
 			re, err := regexp.Compile(p)
 			if err != nil {
-				log.Fatalf("[FATAL] server: failed compile lets_encrypte domain pattern: %q, %v", p, err)
+				zlog.Fatalf("server: failed compile lets_encrypte domain pattern: %q, %v", p, err)
 			}
 			patterns[i] = re
 		}
@@ -135,28 +134,21 @@ func (p *config) buildHostPolicy() {
 	}
 }
 
+type Opts struct {
+	ConfigFile string `cli:"--config, configuration filename" default:"./conf.yaml"`
+}
+
 var Cfg = &config{}
 
-var Flags struct {
-	ShowVersion bool   // default: false
-	ConfigFile  string // default: "./conf.yaml"
-}
-
-func InitFlags() {
-	flag.BoolVar(&Flags.ShowVersion, "version", false, "print version string and quit")
-	flag.StringVar(&Flags.ConfigFile, "config", "./conf.yaml", "configuration filename")
-	flag.Parse()
-}
-
-func InitConfig() {
-	confbuf, err := ioutil.ReadFile(Flags.ConfigFile)
+func InitConfig(opts Opts) {
+	confbuf, err := ioutil.ReadFile(opts.ConfigFile)
 	if err != nil && !os.IsNotExist(err) {
-		log.Fatalf("[FATAL] server: failed read configuration: %v", err)
+		zlog.Fatalf("server: failed read configuration: %v", err)
 	}
 	if len(confbuf) > 0 {
 		err = yaml.UnmarshalStrict(confbuf, Cfg)
 		if err != nil {
-			log.Fatalf("[FATAL] server: failed read configuration: %v", err)
+			zlog.Fatalf("server: failed read configuration: %v", err)
 		}
 	}
 
@@ -171,7 +163,7 @@ func InitConfig() {
 	case "redis":
 		Cfg.Storage.Cache, err = NewRedisCache(Cfg.Storage.Redis)
 		if err != nil {
-			log.Fatalf("[FATAL] server: failed setup redis storage: %v", err)
+			zlog.Fatalf("server: failed setup redis storage: %v", err)
 		}
 	}
 
@@ -179,7 +171,7 @@ func InitConfig() {
 		pattern := Cfg.Managed[i].Pattern
 		re, err := regexp.Compile(pattern)
 		if err != nil {
-			log.Fatalf("[FATAL] server: failed compile managed domain pattern: %q, %v", pattern, err)
+			zlog.Fatalf("server: failed compile managed domain pattern: %q, %v", pattern, err)
 		}
 		Cfg.Managed[i].Regex = re
 	}

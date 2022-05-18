@@ -11,11 +11,11 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/jxskiss/gopkg/v2/zlog"
 	"golang.org/x/net/idna"
 )
 
@@ -39,12 +39,13 @@ var (
 )
 
 func (m *Manager) BuildRoutes(mux *http.ServeMux) {
+	accessLogger := zlog.Named("access").Sugar()
 	var _mw = func(h http.Handler) http.Handler {
-		return loggingMiddleware(recoverMiddleware(h))
+		return loggingMiddleware(accessLogger, recoverMiddleware(m.log, h))
 	}
 	mux.Handle("/cert/", _mw(http.HandlerFunc(m.HandleCertificate)))
 	mux.Handle("/ocsp/", _mw(http.HandlerFunc(m.HandleOCSPStapling)))
-	mux.Handle("/.well-known/acme-challenge/", _mw(m.m.HTTPHandler(nil)))
+	mux.Handle("/.well-known/acme-challenge/", _mw(m.autocert.HTTPHandler(nil)))
 }
 
 // HandleCertificate handlers requests of SSL certificate.
@@ -58,7 +59,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/cert/")
 	domain, err := idna.Lookup.ToASCII(domain)
 	if err != nil {
-		log.Printf("[INFO] manager: got invalid domain name: err= %v", err)
+		m.log.Infof("got invalid domain name: err= %v", err)
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write(RspInvalidDomainName)
 		return
@@ -75,11 +76,11 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if err == ErrHostNotPermitted {
-			log.Printf("[INFO] manager: domain name not permitted: domain= %s", domain)
+			m.log.Infof("domain name not permitted: domain= %s", domain)
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write(RspHostNotPermitted)
 		} else {
-			log.Printf("[ERROR] manager: failed get certificate: domain= %s err= %v", domain, err)
+			m.log.Errorf("failed get certificate: domain= %s err= %v", domain, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write(RspErrGetCertificate)
 		}
@@ -90,7 +91,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	if !isALPN01 {
 		var ttl = time.Until(tlscert.Leaf.NotAfter)
 		if ttl <= 0 {
-			log.Printf("[WARN] manager: got expired certificate: domain= %s", domain)
+			m.log.Warnf("got expired certificate: domain= %s", domain)
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write(RspCertificateIsExpired)
 			return
@@ -99,7 +100,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := marshalCertificate(tlscert, certType, ttlSeconds)
 	if err != nil {
-		log.Printf("[ERROR] manager: failed marshal certificate: domain= %s err= %v", domain, err)
+		m.log.Errorf("failed marshal certificate: domain= %s err= %v", domain, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write(RspErrMarshalCertificate)
 		return
@@ -162,10 +163,10 @@ func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, c
 	// check managed domains first
 	if certKey, ok := IsManagedDomain(name); ok {
 		certType = Managed
-		tlscert, err = GetManagedCertificate(certKey)
+		tlscert, err = m.managed.Get(certKey)
 	} else
 	// check auto issued certificates from Let's Encrypt
-	if err = m.m.HostPolicy(context.Background(), name); err == nil {
+	if err = m.autocert.HostPolicy(context.Background(), name); err == nil {
 		certType = LetsEncrypt
 		tlscert, err = m.GetAutocertCertificate(name)
 	} else
@@ -208,7 +209,7 @@ func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 
 	var ttl = time.Until(nextUpdate)
 	if ttl <= 0 {
-		log.Printf("[WARN] manager: got expired OCSP stapling: domain= %s", domain)
+		m.log.Warnf("got expired OCSP stapling: domain= %s", domain)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -227,13 +228,13 @@ func (m *Manager) GetOCSPStaplingByName(name string, fingerprint string) ([]byte
 		keyName = managedCertOCSPKeyName(certKey)
 	} else
 	// check auto issued certificates from Let's Encrypt
-	if err := m.m.HostPolicy(context.Background(), name); err == nil {
+	if err := m.autocert.HostPolicy(context.Background(), name); err == nil {
 		keyName = m.OCSPKeyName(name)
 	}
 	if keyName == "" {
 		return nil, time.Time{}, ErrStaplingNotCached
 	}
-	return OCSPManager.GetOCSPStapling(keyName, fingerprint)
+	return m.ocspMgr.GetOCSPStapling(keyName, fingerprint)
 }
 
 func (m *Manager) limitTTL(ttl time.Duration) int {

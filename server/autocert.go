@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/jxskiss/gopkg/v2/zlog"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -84,28 +86,31 @@ func EncodeECDSAKey(w io.Writer, key *ecdsa.PrivateKey) error {
 	return pem.Encode(w, pb)
 }
 
-var manager *Manager
-
-func GetManager() *Manager {
-	if manager == nil {
-		manager = &Manager{
-			m: &autocert.Manager{
-				Prompt:      autocert.AcceptTOS,
-				Cache:       Cfg.Storage.Cache,
-				RenewBefore: time.Duration(Cfg.LetsEncrypt.RenewBefore) * 24 * time.Hour,
-				Client:      &acme.Client{DirectoryURL: Cfg.LetsEncrypt.DirectoryURL},
-				Email:       Cfg.LetsEncrypt.Email,
-				HostPolicy:  Cfg.LetsEncrypt.HostPolicy,
-			},
-			ForceRSA: Cfg.LetsEncrypt.ForceRSA,
-		}
+func NewManager(managed *ManagedCertManager, ocspMgr *OCSPManager) *Manager {
+	manager := &Manager{
+		autocert: &autocert.Manager{
+			Prompt:      autocert.AcceptTOS,
+			Cache:       Cfg.Storage.Cache,
+			RenewBefore: time.Duration(Cfg.LetsEncrypt.RenewBefore) * 24 * time.Hour,
+			Client:      &acme.Client{DirectoryURL: Cfg.LetsEncrypt.DirectoryURL},
+			Email:       Cfg.LetsEncrypt.Email,
+			HostPolicy:  Cfg.LetsEncrypt.HostPolicy,
+		},
+		ForceRSA: Cfg.LetsEncrypt.ForceRSA,
+		managed:  managed,
+		ocspMgr:  ocspMgr,
+		log:      zlog.Named("manager").Sugar(),
 	}
 	return manager
 }
 
 type Manager struct {
-	m        *autocert.Manager
+	autocert *autocert.Manager
 	ForceRSA bool
+
+	managed *ManagedCertManager
+	ocspMgr *OCSPManager
+	log     *zap.SugaredLogger
 }
 
 func (m *Manager) KeyName(domain string) string {
@@ -143,15 +148,15 @@ func (m *Manager) helloInfo(domain string) *tls.ClientHelloInfo {
 
 func (m *Manager) GetAutocertCertificate(name string) (*tls.Certificate, error) {
 	helloInfo := m.helloInfo(name)
-	cert, err := m.m.GetCertificate(helloInfo)
+	cert, err := m.autocert.GetCertificate(helloInfo)
 	if err != nil {
 		return nil, err
 	}
 
 	ocspKeyName := m.OCSPKeyName(name)
-	OCSPManager.Watch(ocspKeyName, func() (*tls.Certificate, error) {
+	m.ocspMgr.Watch(ocspKeyName, func() (*tls.Certificate, error) {
 		helloInfo := m.helloInfo(name)
-		return m.m.GetCertificate(helloInfo)
+		return m.autocert.GetCertificate(helloInfo)
 	})
 
 	return cert, nil
@@ -160,7 +165,7 @@ func (m *Manager) GetAutocertCertificate(name string) (*tls.Certificate, error) 
 func (m *Manager) GetAutocertALPN01Certificate(name string) (*tls.Certificate, error) {
 	helloInfo := m.helloInfo(name)
 	helloInfo.SupportedProtos = []string{acme.ALPNProto}
-	return m.m.GetCertificate(helloInfo)
+	return m.autocert.GetCertificate(helloInfo)
 }
 
 var rand63n = mathrand.Int63n
