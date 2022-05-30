@@ -11,7 +11,7 @@ import (
 	"github.com/jxskiss/gopkg/v2/zlog"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 var DefaultSelfSignedOrganization = []string{"SSL Cert Server Self-Signed"}
@@ -146,7 +146,7 @@ func InitConfig(opts Opts) {
 		zlog.Fatalf("server: failed read configuration: %v", err)
 	}
 	if len(confbuf) > 0 {
-		err = yaml.UnmarshalStrict(confbuf, Cfg)
+		err = yaml.Unmarshal(confbuf, Cfg)
 		if err != nil {
 			zlog.Fatalf("server: failed read configuration: %v", err)
 		}

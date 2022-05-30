@@ -11,7 +11,7 @@ require (
 	go.uber.org/zap v1.19.1
 	golang.org/x/crypto v0.0.0-20220518034528-6f7dac969898
 	golang.org/x/net v0.0.0-20220517181318-183a9ca12b87
-	gopkg.in/yaml.v2 v2.4.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
