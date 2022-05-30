@@ -152,14 +152,16 @@ func (m *Manager) GetAutocertCertificate(name string) (*tls.Certificate, error) 
 	if err != nil {
 		return nil, err
 	}
+	m.watchCert(name)
+	return cert, nil
+}
 
+func (m *Manager) watchCert(name string) {
 	ocspKeyName := m.OCSPKeyName(name)
 	m.ocspMgr.Watch(ocspKeyName, func() (*tls.Certificate, error) {
 		helloInfo := m.helloInfo(name)
 		return m.autocert.GetCertificate(helloInfo)
 	})
-
-	return cert, nil
 }
 
 func (m *Manager) GetAutocertALPN01Certificate(name string) (*tls.Certificate, error) {

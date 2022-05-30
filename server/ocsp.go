@@ -26,8 +26,9 @@ const (
 )
 
 var (
-	ErrStaplingNotCached = errors.New("OCSP stapling is not cached")
-	ErrCertfuncNotFound  = errors.New("certificate func not found")
+	ErrOCSPStateNotCached = errors.New("OCSP state is not cached")
+	ErrStaplingNotCached  = errors.New("OCSP stapling is not cached")
+	ErrCertfuncNotFound   = errors.New("certificate func not found")
 )
 
 func NewOCSPManager() *OCSPManager {
@@ -56,7 +57,43 @@ type OCSPManager struct {
 	log *zap.SugaredLogger
 }
 
-func (m *OCSPManager) GetOCSPStapling(keyName string, fingerprint string) ([]byte, time.Time, error) {
+func (m *OCSPManager) GetOCSPStapling(
+	keyName string,
+	fingerprint string,
+	checkCacheCert func() (*tls.Certificate, error),
+) ([]byte, time.Time, error) {
+	ocspDER, nextUpdate, err := m._getOCSPStapling(keyName, fingerprint)
+
+	// If ssl-cert-server was restarted, clients may have already cached
+	// the certificate, then OCSP stapling requests may arrive before
+	// requesting the corresponding certificate, in which case,
+	// OCSP stapling won't be cached before the certificate being loaded.
+	//
+	// We check for cached certificate, but don't trigger request to
+	// Let's Encrypt. If we do get a cached certificate, try again to get
+	// OCSP stapling.
+	if err == ErrOCSPStateNotCached &&
+		!m.IsCertificateCached(keyName) && checkCacheCert != nil {
+		_, err = checkCacheCert()
+		if err == nil {
+			ocspDER, nextUpdate, err = m._getOCSPStapling(keyName, fingerprint)
+		}
+	}
+
+	if err != nil {
+		switch err {
+		case ErrOCSPStateNotCached:
+			m.log.Infof("OCSP state is not cached: keyName= %s", keyName)
+		case ErrStaplingNotCached:
+			m.log.Infof("OCSP stapling is not cached: keyName= %s", keyName)
+		default:
+			m.log.Infof("failed get OCSP stapling: keyName= %s err= %v", keyName, err)
+		}
+	}
+	return ocspDER, nextUpdate, err
+}
+
+func (m *OCSPManager) _getOCSPStapling(keyName string, fingerprint string) ([]byte, time.Time, error) {
 	state, ok := m.lookupState(keyName)
 	if ok {
 		fp := sha1.Sum(state.cert.Leaf.Raw)
@@ -65,11 +102,9 @@ func (m *OCSPManager) GetOCSPStapling(keyName string, fingerprint string) ([]byt
 			defer state.RUnlock()
 			return state.ocspDER, state.nextUpdate, nil
 		}
+		return nil, time.Time{}, ErrStaplingNotCached
 	}
-
-	// don't block request
-	m.log.Infof("OCSP stapling not cached: keyName= %v", keyName)
-	return nil, time.Time{}, ErrStaplingNotCached
+	return nil, time.Time{}, ErrOCSPStateNotCached
 }
 
 func (m *OCSPManager) Watch(keyName string, certfunc func() (*tls.Certificate, error)) {
@@ -78,6 +113,10 @@ func (m *OCSPManager) Watch(keyName string, certfunc func() (*tls.Certificate, e
 		return
 	}
 	go m.watchNewCert(keyName, certfunc)
+}
+
+func (m *OCSPManager) IsCertificateCached(keyName string) bool {
+	return m.getCertMap()[keyName] != nil
 }
 
 func (m *OCSPManager) getCertMap() map[string]func() (*tls.Certificate, error) {

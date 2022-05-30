@@ -234,12 +234,19 @@ func (m *Manager) GetOCSPStaplingByName(name string, fingerprint string) ([]byte
 	if keyName == "" {
 		return nil, time.Time{}, ErrStaplingNotCached
 	}
-	return m.ocspMgr.GetOCSPStapling(keyName, fingerprint)
+
+	checkCacheCert := func() (*tls.Certificate, error) {
+		return m.getCachedCertificateForOCSPStapling(name)
+	}
+	return m.ocspMgr.GetOCSPStapling(keyName, fingerprint, checkCacheCert)
 }
 
 func (m *Manager) limitTTL(ttl time.Duration) int {
+	if ttl <= 30*time.Second {
+		return 10
+	}
 	if ttl <= time.Minute {
-		return 0
+		return 30
 	}
 	var ttlSeconds int64 = 3600
 	if ttl < time.Hour {
