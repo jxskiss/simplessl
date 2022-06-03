@@ -16,12 +16,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/crypto/acme/autocert"
+	"github.com/jxskiss/ssl-cert-server/pkg/utils"
 )
 
 var (
-	selfSignedMu   sync.Mutex
-	selfSignedCert atomic.Value // *tls.Certificate
+	selfSignedMu          sync.Mutex
+	selfSignedCert        atomic.Value // *tls.Certificate
+	selfSignedFingerprint atomic.Value // string
 )
 
 func IsSelfSignedAllowed(domain string) bool {
@@ -36,6 +37,11 @@ func IsSelfSignedAllowed(domain string) bool {
 	return true
 }
 
+func IsSelfSignedCertificate(fingerprint string) bool {
+	fp, _ := selfSignedFingerprint.Load().(string)
+	return fingerprint == fp
+}
+
 func GetSelfSignedCertificate() (*tls.Certificate, error) {
 	if tlscert, ok := selfSignedCert.Load().(*tls.Certificate); ok {
 		return tlscert, nil
@@ -48,12 +54,14 @@ func GetSelfSignedCertificate() (*tls.Certificate, error) {
 	}
 
 	// check storage first
-	tlscert, err := loadCertificateFromStore(Cfg.SelfSigned.CertKey)
-	if err != nil && err != autocert.ErrCacheMiss {
+	tlscert, _, _, err := loadCertificateFromStore(Cfg.SelfSigned.CertKey)
+	if err != nil && err != ErrCacheMiss {
 		return nil, fmt.Errorf("self_signed: %v", err)
 	}
 	if tlscert != nil {
+		fingerprint := utils.CalcCertFingerprint(tlscert.Leaf)
 		selfSignedCert.Store(tlscert)
+		selfSignedFingerprint.Store(fingerprint)
 		return tlscert, nil
 	}
 
@@ -62,7 +70,9 @@ func GetSelfSignedCertificate() (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
+	fingerprint := utils.CalcCertFingerprint(tlscert.Leaf)
 	selfSignedCert.Store(tlscert)
+	selfSignedFingerprint.Store(fingerprint)
 	return tlscert, nil
 }
 
@@ -79,7 +89,7 @@ func createAndSaveSelfSignedCertificate() (*tls.Certificate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("self_signed: failed put certificate: %v", err)
 	}
-	tlscert, _ := parseCertificate(cacheData)
+	tlscert, _, _, _ := utils.ParseCertificate(cacheData)
 	return tlscert, nil
 }
 
@@ -122,7 +132,7 @@ func CreateSelfSignedCertificate(validDays int, organization []string) (certPEM,
 		Bytes: certBytes,
 	})
 	privKeyBuf := &bytes.Buffer{}
-	_ = EncodeECDSAKey(privKeyBuf, privKey)
+	_ = utils.EncodeECDSAKey(privKeyBuf, privKey)
 	privKeyPEM = privKeyBuf.Bytes()
 	return
 }

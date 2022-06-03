@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,10 +15,12 @@ import (
 	"github.com/jxskiss/gopkg/v2/zlog"
 	"github.com/jxskiss/mcli"
 
+	"github.com/jxskiss/ssl-cert-server/pkg/lego"
+	"github.com/jxskiss/ssl-cert-server/pkg/utils"
 	"github.com/jxskiss/ssl-cert-server/server"
 )
 
-const VERSION = "0.4.3"
+const VERSION = "0.5.0"
 
 func main() {
 	zlog.SetDevelopment()
@@ -58,22 +59,31 @@ func cmdPrintVersion() {
 	fmt.Printf("ssl-cert-server v%s-%s\n", VERSION, gitRevision)
 }
 
+func initConfigAndCreateServer(opts server.Opts) *server.Server {
+	server.InitConfig(opts)
+	svr := server.NewServer()
+	return svr
+}
+
 func cmdRunServer() {
 	var opts server.Opts
 	mcli.Parse(&opts)
 
-	Cfg := server.Cfg
+	cfg := server.Cfg
+	svr := initConfigAndCreateServer(opts)
 
-	server.InitConfig(opts)
+	// Setup Lego application.
+	if len(cfg.Wildcard.Certificates) > 0 {
+		setupLegoApp(svr.AutocertMgr)
+	}
+
 	mux := http.NewServeMux()
-
-	svr := server.NewServer()
 	svr.AutocertMgr.BuildRoutes(mux)
 
 	// Graceful restarts.
 	upg, err := tableflip.New(tableflip.Options{
 		UpgradeTimeout: time.Minute,
-		PIDFile:        Cfg.PIDFile,
+		PIDFile:        cfg.PIDFile,
 	})
 	if err != nil {
 		zlog.Fatalf("server: failed init upgrader: %v", err)
@@ -93,13 +103,13 @@ func cmdRunServer() {
 	}()
 
 	// Listen must be called before Ready
-	ln, err := upg.Listen("tcp", Cfg.Listen)
+	ln, err := upg.Listen("tcp", cfg.Listen)
 	if err != nil {
 		zlog.Fatalf("server: failed listen: %v", err)
 	}
 	httpServer := http.Server{Handler: mux}
 	go func() {
-		zlog.Infof("server: listening on http://%v", Cfg.Listen)
+		zlog.Infof("server: listening on http://%v", cfg.Listen)
 		err := httpServer.Serve(ln)
 		if err != http.ErrServerClosed {
 			zlog.Fatalf("server: stopped unexpectedly: %v", err)
@@ -131,6 +141,23 @@ func cmdRunServer() {
 	}
 }
 
+func setupLegoApp(mgr *server.Manager) {
+	cfg := server.Cfg
+	ctx := context.Background()
+	acmeAccount, privKey, err := mgr.GetACMEAccount(ctx)
+	if err != nil {
+		zlog.Fatalf("server: failed get ACME account: %v", err)
+	}
+	legoAcc, err := lego.FromACMEAccount(cfg.LetsEncrypt.Email, acmeAccount, privKey)
+	if err != nil {
+		zlog.Fatalf("server: failed convert ACME account: %v", err)
+	}
+	err = lego.SetupApp(cfg.Wildcard.LegoDataPath, legoAcc)
+	if err != nil {
+		zlog.Fatalf("server: failed setup Lego app: %v", err)
+	}
+}
+
 func cmdGenerateSelfSignedCertificate() {
 	var opts struct {
 		ValidDays     int      `cli:"--valid-days, number of days the cert is valid for" default:"365"`
@@ -149,15 +176,15 @@ func cmdGenerateSelfSignedCertificate() {
 	if err != nil {
 		zlog.Fatalf("failed create self-signed certificate: %v", err)
 	}
-	err = ioutil.WriteFile(opts.KeyOut, privKeyPEM, 0644)
+	err = utils.WriteFile(opts.KeyOut, privKeyPEM, 0600)
 	if err == nil {
-		err = ioutil.WriteFile(opts.CertOut, certPEM, 0644)
+		err = utils.WriteFile(opts.CertOut, certPEM, 0600)
 	}
 	if err == nil {
 		outData := append(privKeyPEM, certPEM...)
-		err = ioutil.WriteFile(opts.Out, outData, 0644)
+		err = utils.WriteFile(opts.Out, outData, 0600)
 	}
 	if err != nil {
-		zlog.Fatalf("failed write self-signed certificate file: %v", err)
+		zlog.Fatalf("failed write self-signed certificate files: %v", err)
 	}
 }

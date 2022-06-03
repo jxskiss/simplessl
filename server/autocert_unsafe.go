@@ -6,6 +6,7 @@ import (
 	"strings"
 	_ "unsafe"
 
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -16,8 +17,15 @@ type _certKey struct {
 	isToken bool   // tls-based challenge token cert; key type is undefined regardless of isRSA
 }
 
+func init() {
+	// TODO: assert _certkey equality
+}
+
 //go:linkname _autocert_Manager_cert golang.org/x/crypto/acme/autocert.(*Manager).cert
 func _autocert_Manager_cert(mgr *autocert.Manager, ctx context.Context, ck _certKey) (*tls.Certificate, error)
+
+//go:linkname _autocert_Manager_acmeClient golang.org/x/crypto/acme/autocert.(*Manager).acmeClient
+func _autocert_Manager_acmeClient(mgr *autocert.Manager, ctx context.Context) (*acme.Client, error)
 
 //go:linkname _autocert_supportsECDSA golang.org/x/crypto/acme/autocert.supportsECDSA
 func _autocert_supportsECDSA(hello *tls.ClientHelloInfo) bool
@@ -29,12 +37,16 @@ func (m *Manager) getCachedCertificateForOCSPStapling(name string) (
 	if ck, ok := IsManagedDomain(name); ok {
 		return m.managed.Get(ck)
 	}
+	if wcItem, ok := IsWildcardDomain(name); ok {
+		return m.wildcard.Get(wcItem, false)
+	}
+
+	// Else check cached certificates from Let's Encrypt, but don't trigger
+	// requests to issue new certificates.
 	err = m.autocert.HostPolicy(context.Background(), name)
 	if err != nil {
 		return nil, err
 	}
-
-	// check cache, but don't trigger requests to Let's Encrypt
 	ck := _certKey{
 		domain: strings.TrimSuffix(name, "."), // golang.org/issue/18114
 		isRSA:  !_autocert_supportsECDSA(m.helloInfo(name)),

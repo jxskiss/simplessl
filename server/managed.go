@@ -80,7 +80,7 @@ func (p *ManagedCertManager) getManagedCertificate(certKey string) (*tls.Certifi
 	if mngCert.cert != nil {
 		return (*tls.Certificate)(mngCert.cert), nil
 	}
-	tlscert, err := loadCertificateFromStore(certKey)
+	tlscert, _, _, err := loadCertificateFromStore(certKey)
 	if err != nil {
 		return nil, fmt.Errorf("managed: %v", err)
 	}
@@ -90,7 +90,7 @@ func (p *ManagedCertManager) getManagedCertificate(certKey string) (*tls.Certifi
 }
 
 func (p *ManagedCertManager) reloadManagedCertificate(mngCert *managedCert, certKey string) {
-	tlscert, err := loadCertificateFromStore(certKey)
+	tlscert, _, _, err := loadCertificateFromStore(certKey)
 	if err != nil {
 		p.log.Warnf("failed reload certificate: certKey= %s err= %v", certKey, err)
 		return

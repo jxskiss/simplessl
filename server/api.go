@@ -5,9 +5,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/tls"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -17,6 +15,8 @@ import (
 
 	"github.com/jxskiss/gopkg/v2/zlog"
 	"golang.org/x/net/idna"
+
+	"github.com/jxskiss/ssl-cert-server/pkg/utils"
 )
 
 // Certificate types
@@ -26,6 +26,7 @@ import (
 const (
 	LetsEncrypt = 0
 	Managed     = 1
+	Wildcard    = 2
 	SelfSigned  = 100
 	ALPNCert    = 101
 )
@@ -123,9 +124,9 @@ func marshalCertificate(cert *tls.Certificate, certType int, ttl int) ([]byte, e
 	}
 	switch key := cert.PrivateKey.(type) {
 	case *rsa.PrivateKey:
-		err = EncodeRSAKey(&privKeyBuf, key)
+		err = utils.EncodeRSAKey(&privKeyBuf, key)
 	case *ecdsa.PrivateKey:
-		err = EncodeECDSAKey(&privKeyBuf, key)
+		err = utils.EncodeECDSAKey(&privKeyBuf, key)
 	default:
 		err = fmt.Errorf("unknown private key type")
 	}
@@ -137,9 +138,7 @@ func marshalCertificate(cert *tls.Certificate, certType int, ttl int) ([]byte, e
 	var fingerprint string
 	var expireAt int64
 	if cert.Leaf != nil {
-		checksum := sha1.Sum(cert.Leaf.Raw)
-		fingerprint = hex.EncodeToString(checksum[:])
-		expireAt = cert.Leaf.NotAfter.Unix()
+		fingerprint = utils.CalcCertFingerprint(cert.Leaf)
 	}
 	response := struct {
 		Type        int    `json:"type"`
@@ -165,7 +164,12 @@ func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, c
 		certType = Managed
 		tlscert, err = m.managed.Get(certKey)
 	} else
-	// check auto issued certificates from Let's Encrypt
+	// check wildcard domains
+	if wcItem, ok := IsWildcardDomain(name); ok {
+		certType = Wildcard
+		tlscert, err = m.wildcard.Get(wcItem, true)
+	} else
+	// check concrete domains
 	if err = m.autocert.HostPolicy(context.Background(), name); err == nil {
 		certType = LetsEncrypt
 		tlscert, err = m.GetAutocertCertificate(name)
@@ -200,7 +204,13 @@ func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 		w.Write(RspHostNotPermitted)
 		return
 	}
+
 	fingerprint := r.URL.Query().Get("fp")
+	if fingerprint != "" && IsSelfSignedCertificate(fingerprint) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	response, nextUpdate, err := m.GetOCSPStaplingByName(domain, fingerprint)
 	if err != nil {
 		w.WriteHeader(http.StatusNoContent)
@@ -227,7 +237,11 @@ func (m *Manager) GetOCSPStaplingByName(name string, fingerprint string) ([]byte
 	if certKey, ok := IsManagedDomain(name); ok {
 		keyName = managedCertOCSPKeyName(certKey)
 	} else
-	// check auto issued certificates from Let's Encrypt
+	// check wildcard domains
+	if wcItem, ok := IsWildcardDomain(name); ok {
+		keyName = wcItem.OCSPKeyName()
+	} else
+	// check concrete domains
 	if err := m.autocert.HostPolicy(context.Background(), name); err == nil {
 		keyName = m.OCSPKeyName(name)
 	}

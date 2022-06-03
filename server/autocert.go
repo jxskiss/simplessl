@@ -3,13 +3,9 @@ package server
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	mathrand "math/rand"
 	"net"
 	"net/http"
@@ -48,6 +44,7 @@ func init() {
 	}
 }
 
+var ErrCacheMiss = autocert.ErrCacheMiss
 var ErrHostNotPermitted = errors.New("host not permitted")
 
 func HostWhitelist(hosts ...string) autocert.HostPolicy {
@@ -71,22 +68,7 @@ func RegexpWhitelist(patterns ...*regexp.Regexp) autocert.HostPolicy {
 	}
 }
 
-func EncodeRSAKey(w io.Writer, key *rsa.PrivateKey) error {
-	b := x509.MarshalPKCS1PrivateKey(key)
-	pb := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: b}
-	return pem.Encode(w, pb)
-}
-
-func EncodeECDSAKey(w io.Writer, key *ecdsa.PrivateKey) error {
-	b, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return err
-	}
-	pb := &pem.Block{Type: "EC PRIVATE KEY", Bytes: b}
-	return pem.Encode(w, pb)
-}
-
-func NewManager(managed *ManagedCertManager, ocspMgr *OCSPManager) *Manager {
+func NewManager(wildcard *WildcardManager, managed *ManagedCertManager, ocspMgr *OCSPManager) *Manager {
 	manager := &Manager{
 		autocert: &autocert.Manager{
 			Prompt:      autocert.AcceptTOS,
@@ -97,6 +79,7 @@ func NewManager(managed *ManagedCertManager, ocspMgr *OCSPManager) *Manager {
 			HostPolicy:  Cfg.LetsEncrypt.HostPolicy,
 		},
 		ForceRSA: Cfg.LetsEncrypt.ForceRSA,
+		wildcard: wildcard,
 		managed:  managed,
 		ocspMgr:  ocspMgr,
 		log:      zlog.Named("manager").Sugar(),
@@ -108,9 +91,22 @@ type Manager struct {
 	autocert *autocert.Manager
 	ForceRSA bool
 
-	managed *ManagedCertManager
-	ocspMgr *OCSPManager
-	log     *zap.SugaredLogger
+	wildcard *WildcardManager
+	managed  *ManagedCertManager
+	ocspMgr  *OCSPManager
+	log      *zap.SugaredLogger
+}
+
+func (m *Manager) GetACMEAccount(ctx context.Context) (*acme.Account, *ecdsa.PrivateKey, error) {
+	acmeCli, err := _autocert_Manager_acmeClient(m.autocert, ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot get ACME client: %w", err)
+	}
+	account, err := acmeCli.GetReg(ctx, "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot get ACME account: %w", err)
+	}
+	return account, acmeCli.Key.(*ecdsa.PrivateKey), nil
 }
 
 func (m *Manager) KeyName(domain string) string {

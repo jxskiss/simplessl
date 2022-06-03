@@ -8,7 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -389,7 +389,7 @@ func requestOCSPStapling(ctx context.Context, cert *tls.Certificate, issuer *x50
 		return nil, nil, err
 	}
 	defer httpResp.Body.Close()
-	der, err = ioutil.ReadAll(httpResp.Body)
+	der, err = io.ReadAll(httpResp.Body)
 	if err != nil {
 		return nil, nil, err
 	}

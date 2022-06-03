@@ -12,7 +12,7 @@ managed:
   - pattern: "abc\\.example\\.com"
     cert_key: "abc.example.com"
   - pattern: "(\\w+)\\.example\\.com"
-    cert_key: "wildcard_example_com"
+    cert_key: "managed_example_com"
 
 lets_encrypt:
   staging: false
@@ -25,6 +25,25 @@ lets_encrypt:
   re_patterns:
     - "api1-(\\w+)\\.example\\.com"
     - "api2-(\\w+)\\.example\\.com"
+
+wildcard:
+  lego_data_path: ""
+  dns_credentials:
+    - name: alidns_1
+      provider: alidns
+      env:
+        ALICLOUD_ACCESS_KEY: "xxxx"
+        ALICLOUD_SECRET_KEY: "xxxx"
+  certificates:
+    - root_domain: "example.com"
+      credential: alidns_1
+      domains:
+        - "*.example.com"
+        - "example.com"
+    - root_domain: "abc.example.com"
+      credential: alidns_1
+      domains:
+        - "*.abc.example.com"
 
 self_signed:
   enable: false
@@ -58,6 +77,17 @@ self_signed:
 # lets_encrypt.email: ACME account contact email, if Let's Encrypt client's key is already registered, this is not used
 # lets_encrypt.domains: Allowed domain names, match by check string equality
 # lets_encrypt.re_patterns: Allowed domain name regex patterns
+
+# wildcard: Wildcard certificates settings.
+# wildcard.lego_data_path: Directory to use for Lego data, default is ${storage.dir_cache}/.lego/
+# wildcard.dns_credentials: The credentials to use for DNS-01 challenges, check Lego's documents for available providers
+# wildcard.dns_credentials.name: Name of a DNS credential, must be unique in wildcard.dns_credentials
+# wildcard.dns_credentials.provider: The DNS provider code to use with Lego
+# wildcard.dns_credentials.env: Environment variables to use with Lego
+# wildcard.certificates: The wildcard certificates to manage
+# wildcard.certificates.root_domain: The root domain for a wildcard certificate, must be unique in wildcard.certificates
+# wildcard.certificates.credential: The credential to use for this certificate, must be a valid credential configured in wildcard.dns_credentials
+# wildcard.certificates.domains: The domains to issue and renew certificate
 
 # self_signed: Self signed certificate settings.
 # self_signed.enable: whether enable self-signed certificate (default false)
