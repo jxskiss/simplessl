@@ -1,14 +1,37 @@
 # ssl-cert-server
 
-On the fly free SSL registration and renewal inside [OpenResty/nginx](http://openresty.org) with [Let's Encrypt](https://letsencrypt.org).
+On the fly free SSL registration and renewal inside [OpenResty/nginx](http://openresty.org)
+and any Golang TLS program, with [Let's Encrypt](https://letsencrypt.org).
 
-This OpenResty plugin automatically and transparently issues SSL certificates from Let's Encrypt as requests are received.
+The ssl-cert-server automatically and transparently issues SSL certificates from Let's Encrypt
+as requests are received, when a certificate needs a renewal, it automatically renews the
+certificate asynchronously in background.
 
-This uses the `ssl_certificate_by_lua` functionality in OpenResty 1.9.7.2+.
+The Openresty plugin uses the `ssl_certificate_by_lua` functionality in OpenResty 1.9.7.2+.
 
-By using ssl-cert-server to register SSL certificates with Let's Encrypt, you agree to the [Let's Encrypt Subscriber Agreement](https://letsencrypt.org/repository/).
+By using ssl-cert-server to register SSL certificates with Let's Encrypt,
+you agree to the [Let's Encrypt Subscriber Agreement](https://letsencrypt.org/repository/).
 
-I got inspires and stole some code from the awesome project [lua-resty-auto-ssl](https://github.com/GUI/lua-resty-auto-ssl) and Golang's autocert package, many thanks 😀
+Disclaimer: I got inspires and stole some code from the awesome
+project [lua-resty-auto-ssl](https://github.com/GUI/lua-resty-auto-ssl) and Go's autocert package.
+Also this program uses [Lego](https://github.com/go-acme/lego) to resolve dns-01 challenge.
+Many thanks 😀
+
+## Features
+
+1. High performance, very low latency added to user requests.
+2. Issue and renew certificate for each domain using http-01 challenge, support Openresty and Golang.
+3. Issue and renew certificate for each domain using tls-alpn-01 challenge, support Golang.
+4. Issue and renew **wildcard certificate**, using dns-01 challenge, support Openresty and Golang.
+5. Serve manually-managed certificates.
+6. Serve OCSP stapling, with cache and asynchronous renewal, the latency is negligible.
+7. Generate and serve self-signed certificate.
+8. Graceful restart like Nginx without losing any requests.
+9. Support directory and Redis as cache storage, adding new storage support is easy.
+
+**NOTE: currently this program is designed to be used inside intranet,
+security features are not seriously considered, be sure to PROTECT your certificate server
+properly and keep an eye on security concerns.**
 
 ## Centric certificate server
 
@@ -27,7 +50,7 @@ By this design, there are several advantages:
 1. Golang program is considered easier to maintain and do troubleshooting than
    doing ACME work and storage with Lua;
 1. Also, Golang program is considered easier to extend to support new type of storage,
-   or new features (eg. security related things);
+   or new features (e.g. wildcard certificates, security, etc.);
 
 A multi-layered cache mechanism is used to help frontend Nginx and Golang web servers
 automatically update to renewed certificates with negligible performance penalty, and
@@ -44,11 +67,14 @@ The cached certificates and OCSP staple is automatically renewed and refreshed i
 
 Considered BETA.
 
-Although this program has been running for 3 years supporting my personal sites, but this is a spare-time project,
-and has not known deployment for large production systems.
-Thus anyone interested with this is HIGHLY RECOMMENDED to do testing in your environment.
+Although this program has been running for nearly 5 years supporting my personal sites,
+however this is a spare-time project and has not known deployment for large production systems.
+
+**Anyone interested with this is HIGHLY RECOMMENDED to do testing in your environment.**
 
 ## Installation
+
+### For Openresty
 
 The lua library is published with [OPM](https://opm.openresty.org/),
 the following command will install the ssl-cert-server library, as well as it's dependency "lua-resty-http".
@@ -66,11 +92,19 @@ wget https://raw.githubusercontent.com/pintsized/lua-resty-http/master/lib/resty
 wget https://raw.githubusercontent.com/jxskiss/ssl-cert-server/master/lib/resty/ssl-cert-server.lua
 ```
 
-Then download the cert server service binary file, either build by yourself:
+### For Golang TLS program
 
-`go get github.com/jxskiss/ssl-cert-server`
+`go get github.com/jxskiss/ssl-cert-server/lib/tlsconfig@latest`
 
-Or, download prebuilt binaries from the [release page](https://github.com/jxskiss/ssl-cert-server/releases).
+See the following doc for example of using `lib/tlsconfig`.
+
+### Run ssl-cert-server
+
+Download the cert server service binary file, either build by yourself:
+
+`go install github.com/jxskiss/ssl-cert-server@latest`
+
+or download prebuilt binaries from the [release page](https://github.com/jxskiss/ssl-cert-server/releases).
 
 Copy `example.conf.yaml` to your favorite location and edit it to fit your need.
 Configuration options are explained in the example file.
@@ -78,14 +112,15 @@ Configuration options are explained in the example file.
 Run your cert server:
 
 ```bash
-/path/to/ssl-cert-server -config=/path/to/your/conf.yaml
+/path/to/ssl-cert-server run -c /path/to/your/conf.yaml
 ```
 
 Or to generate a self-signed certificate, see `ssl-cert-server generate-self-signed -h`.
 
-Now you can configure your OpenResty to use the cert server for SSL certificates, see the following configuration example.
+Now you can configure your OpenResty or Golang program to use the cert server for SSL certificates,
+see the following examples.
 
-## Nginx configuration Example
+## Nginx configuration example
 
 ```conf
 events {
@@ -163,7 +198,7 @@ http {
 }
 ```
 
-## Package `lib/tlsconfig`
+## Golang `lib/tlsconfig`
 
 You may use the package `lib/tlsconfig` to run Golang program with TLS. eg:
 
@@ -191,9 +226,19 @@ func main() {
 
 ## Change history
 
+### v0.5.0 @ 2022-06-12
+
+- fix: incorrect behavior when querying OCSP stapling before query certificate
+- new: support wildcard certificates, using Lego to resolve dns-p1 challenge
+- change: make `lib/config` be standalone module
+- change: upgrade dependency to latest
+- change: refactor code to use more sophisticated cli and logging libraries
+- change: refactor code for better maintainability
+
 ### v0.4.3 @ 2022-05-17
 
-- fix: OCSP stapling which failed because the wrong certificate was selected as issuer certificate, thanks @cedricdubois (#6)
+- fix: OCSP stapling which failed because the wrong certificate was selected as issuer certificate,
+  thanks @cedricdubois (#6)
 - new: optional "prefix" option for Redis storage
 
 ### v0.4.2 @ 2021-06-02
@@ -219,7 +264,7 @@ Update: this release has known bugs, please upgrade to newer release.
 - new: (lua) layered cache for sake of best performance (per-worker LRU cache + shared memory cache)
 - new: graceful restart like Nginx without losing any request
 - change: use YAML configuration file to replace command line flags,
-  since we support more features, the command line flags is not enough to do configuration 
+  since we support more features, the command line flags is not enough to do configuration
 - change: (internal) reorganize code into smaller files for better maintainability
 - change: (internal) optimize lua shared memory cache using for better performance
 - fix: add fingerprint to certificate and OCSP staple cache, to make sure
@@ -242,9 +287,11 @@ This release is a major change with quite a lot of new features and improvements
 ### v0.2.0 @ 2018-08-11
 
 - fix: dead loop in OCSP stapling updater after months long running
-- change: remove unnecessary golang dependencies (`gocraft/web`, `jxskiss/glog`), resulting smaller binary size and easier installation
+- change: remove unnecessary golang dependencies (`gocraft/web`, `jxskiss/glog`),
+  resulting smaller binary size and easier installation
 - change: since glog dependency has been removed, the flags provided by glog are not available anymore
-- change: use official `acme/autocert` package instead of forking, makes code clearer and allows easier tracking of upstream changes
+- change: use official `acme/autocert` package instead of forking,
+  makes code clearer and allows easier tracking of upstream changes
 - new: use glide to manage golang dependencies
 
 ### v0.1.2 @ 2018-06-20
