@@ -62,7 +62,7 @@ func (p *wildcardItem) Match(name string) bool {
 	return false
 }
 
-type config struct {
+type Config struct {
 	Listen  string `yaml:"listen" default:"127.0.0.1:8999"`
 	PIDFile string `yaml:"pid_file" default:"ssl-cert-server.pid"`
 
@@ -71,7 +71,7 @@ type config struct {
 		DirCache string      `yaml:"dir_cache" default:"./secret-dir"`
 		Redis    redisConfig `yaml:"redis"`
 
-		// Cache is used by Manager to store and retrieve previously obtained certificates
+		// Cache is used to store and retrieve previously obtained certificates
 		// and other account data as opaque blobs.
 		Cache autocert.Cache `yaml:"-"`
 	} `yaml:"storage"`
@@ -121,7 +121,7 @@ type config struct {
 	} `yaml:"self_signed"`
 }
 
-func (p *config) setupDefaultOptions() {
+func (p *Config) setupDefaultOptions() {
 	if p.LetsEncrypt.Staging {
 		p.LetsEncrypt.DirectoryURL = stagingDirectoryURL
 	} else {
@@ -136,7 +136,7 @@ func (p *config) setupDefaultOptions() {
 	}
 }
 
-func (p *config) buildHostPolicy() {
+func (p *Config) buildHostPolicy() {
 	var listPolicy autocert.HostPolicy
 	var rePolicy autocert.HostPolicy
 	if len(p.LetsEncrypt.Domains) > 0 {
@@ -177,7 +177,7 @@ func (p *config) buildHostPolicy() {
 	}
 }
 
-func (p *config) prepareWildcardConfig() error {
+func (p *Config) prepareWildcardConfig() error {
 	credentialMap := make(map[string]*dnsCredential, len(p.Wildcard.DNSCredentials))
 	for _, cred := range p.Wildcard.DNSCredentials {
 		if cred.Name == "" || cred.Provider == "" {
@@ -210,7 +210,7 @@ func (p *config) prepareWildcardConfig() error {
 	return nil
 }
 
-func (p *config) CheckWildcardDomain(name string) *wildcardItem {
+func (p *Config) CheckWildcardDomain(name string) *wildcardItem {
 	for _, item := range p.Wildcard.certificateList {
 		if item.Match(name) {
 			return item
@@ -219,55 +219,99 @@ func (p *config) CheckWildcardDomain(name string) *wildcardItem {
 	return nil
 }
 
-func (p *config) validate() error {
+func (p *Config) validate() error {
 	if p.LetsEncrypt.Email == "" {
 		return errors.New("lets_encrypt.email cannot be empty")
 	}
 	return nil
 }
 
-var Cfg = &config{}
+func (p *Config) IsManagedDomain(domain string) (certKey string, ok bool) {
+	for _, x := range p.Managed {
+		if x.Regex.MatchString(domain) {
+			return x.CertKey, true
+		}
+	}
+	return "", false
+}
 
-func InitConfig(opts Opts) {
-	err := confr.Load(Cfg, opts.ConfigFile)
+func (p *Config) IsWildcardDomain(domain string) (item *wildcardItem, ok bool) {
+	if len(p.Wildcard.certificateList) == 0 {
+		return nil, false
+	}
+
+	type checkResult struct {
+		item *wildcardItem
+		ok   bool
+	}
+	if val, ok := wildcardDomainCheckResultCache.Load(domain); ok {
+		result := val.(*checkResult)
+		return result.item, result.ok
+	}
+
+	item = p.CheckWildcardDomain(domain)
+	if item != nil {
+		ok = true
+	}
+	wildcardDomainCheckResultCache.Store(domain, &checkResult{item, ok})
+	return item, ok
+}
+
+func (p *Config) IsSelfSignedAllowed(domain string) bool {
+	if !p.SelfSigned.Enable {
+		return false
+	}
+	if p.SelfSigned.CheckSNI {
+		if err := checkHostIsValid(context.Background(), domain); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func InitConfig(opts Opts) *Config {
+	var cfg = &Config{}
+	err := confr.Load(cfg, opts.ConfigFile)
 	if err != nil {
 		zlog.Fatalf("config: failed load configuration: %v", err)
 	}
 
-	Cfg.setupDefaultOptions()
-	Cfg.buildHostPolicy()
+	cfg.setupDefaultOptions()
+	cfg.buildHostPolicy()
 
-	err = Cfg.prepareWildcardConfig()
+	err = cfg.prepareWildcardConfig()
 	if err != nil {
 		zlog.Fatalf("config: failed prepare wildcard config: %v", err)
 	}
 
-	switch Cfg.Storage.Type {
+	switch cfg.Storage.Type {
 	case "dir_cache":
-		Cfg.Storage.Cache, err = NewDirCache(Cfg.Storage.DirCache)
+		cfg.Storage.Cache, err = NewDirCache(cfg.Storage.DirCache)
 		if err != nil {
 			zlog.Fatalf("config: failed setup dir_cache storage: %v", err)
 		}
 	case "redis":
-		Cfg.Storage.Cache, err = NewRedisCache(Cfg.Storage.Redis)
+		cfg.Storage.Cache, err = NewRedisCache(cfg.Storage.Redis)
 		if err != nil {
 			zlog.Fatalf("config: failed setup redis storage: %v", err)
 		}
 	}
 
-	for i := range Cfg.Managed {
-		pattern := Cfg.Managed[i].Pattern
+	for i := range cfg.Managed {
+		pattern := cfg.Managed[i].Pattern
 		re, err := regexp.Compile(pattern)
 		if err != nil {
 			zlog.Fatalf("config: failed compile managed domain pattern: %q, %v", pattern, err)
 		}
-		Cfg.Managed[i].Regex = re
+		cfg.Managed[i].Regex = re
 	}
 
-	err = Cfg.validate()
+	err = cfg.validate()
 	if err != nil {
 		zlog.Fatalf("config: failed validate configuration: %v", err)
 	}
+
+	return cfg
 }
 
 func setDefault(dst interface{}, value interface{}) {

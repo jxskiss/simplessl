@@ -20,27 +20,18 @@ type managedCert struct {
 	loadAt int64
 }
 
-func IsManagedDomain(domain string) (certKey string, ok bool) {
-	for _, x := range Cfg.Managed {
-		if x.Regex.MatchString(domain) {
-			return x.CertKey, true
-		}
-	}
-	return "", false
-}
-
-func NewManagedCertManager(ocspMgr *OCSPManager) *ManagedCertManager {
+func NewManagedCertManager(server *Server) *ManagedCertManager {
 	manager := &ManagedCertManager{
-		ocspMgr: ocspMgr,
-		log:     zlog.Named("managed").Sugar(),
+		server: server,
+		log:    zlog.Named("managed").Sugar(),
 	}
 	return manager
 }
 
 type ManagedCertManager struct {
-	cache   sync.Map
-	ocspMgr *OCSPManager
-	log     *zap.SugaredLogger
+	cache  sync.Map
+	server *Server
+	log    *zap.SugaredLogger
 }
 
 func (p *ManagedCertManager) Get(certKey string) (*tls.Certificate, error) {
@@ -50,7 +41,7 @@ func (p *ManagedCertManager) Get(certKey string) (*tls.Certificate, error) {
 	}
 
 	ocspKeyName := managedCertOCSPKeyName(certKey)
-	p.ocspMgr.Watch(ocspKeyName, func() (*tls.Certificate, error) {
+	p.server.OCSPManager.Watch(ocspKeyName, func() (*tls.Certificate, error) {
 		return p.getManagedCertificate(certKey)
 	})
 
@@ -80,7 +71,7 @@ func (p *ManagedCertManager) getManagedCertificate(certKey string) (*tls.Certifi
 	if mngCert.cert != nil {
 		return (*tls.Certificate)(mngCert.cert), nil
 	}
-	tlscert, _, _, err := loadCertificateFromStore(certKey)
+	tlscert, _, _, err := p.server.LoadCertificateFromStore(certKey)
 	if err != nil {
 		return nil, fmt.Errorf("managed: %v", err)
 	}
@@ -90,7 +81,7 @@ func (p *ManagedCertManager) getManagedCertificate(certKey string) (*tls.Certifi
 }
 
 func (p *ManagedCertManager) reloadManagedCertificate(mngCert *managedCert, certKey string) {
-	tlscert, _, _, err := loadCertificateFromStore(certKey)
+	tlscert, _, _, err := p.server.LoadCertificateFromStore(certKey)
 	if err != nil {
 		p.log.Warnf("failed reload certificate: certKey= %s err= %v", certKey, err)
 		return

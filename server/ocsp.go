@@ -163,7 +163,7 @@ func (m *OCSPManager) listenCertChanges() {
 
 // touchState checks if OCSP stapling state for the given keyName is cached.
 // If not, it will request the OCSP stapling from the certificate's OCSP
-// server and cache the stateMap in Manager.
+// server and cache the stateMap in OCSPManager.
 func (m *OCSPManager) touchState(keyName string) {
 	cert, err := m.getCertificate(keyName)
 	if err != nil {

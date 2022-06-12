@@ -16,28 +16,10 @@ import (
 
 var wildcardDomainCheckResultCache sync.Map
 
-func IsWildcardDomain(domain string) (item *wildcardItem, ok bool) {
-	type checkResult struct {
-		item *wildcardItem
-		ok   bool
-	}
-	if val, ok := wildcardDomainCheckResultCache.Load(domain); ok {
-		result := val.(*checkResult)
-		return result.item, result.ok
-	}
-
-	cfg := Cfg
-	item = cfg.CheckWildcardDomain(domain)
-	if item != nil {
-		ok = true
-	}
-	wildcardDomainCheckResultCache.Store(domain, &checkResult{item, ok})
-	return item, ok
-}
-
-func NewWildcardManager(ocspMgr *OCSPManager) *WildcardManager {
+func NewWildcardManager(server *Server, legoApp *lego.App) *WildcardManager {
 	return &WildcardManager{
-		ocspMgr: ocspMgr,
+		server:  server,
+		legoApp: legoApp,
 		log:     zlog.Named("wildcard").Sugar(),
 	}
 }
@@ -52,6 +34,7 @@ func (p *wildcardItem) OCSPKeyName() string {
 
 type wildcardCert struct {
 	sync.Mutex
+	mgr  *WildcardManager
 	item *wildcardItem
 	cert unsafe.Pointer // *withPEMCert
 
@@ -66,7 +49,7 @@ func (p *wildcardCert) saveCertificate(tlscert *tls.Certificate, privPEM, pubPEM
 	}))
 	if saveToStorage {
 		certKey := p.item.CacheKey()
-		err := saveCertificateToStore(certKey, privPEM, pubPEM)
+		err := p.mgr.server.SaveCertificateToStore(certKey, privPEM, pubPEM)
 		if err != nil {
 			return err
 		}
@@ -82,7 +65,8 @@ type withPEMCert struct {
 
 type WildcardManager struct {
 	cache   sync.Map
-	ocspMgr *OCSPManager
+	server  *Server
+	legoApp *lego.App
 	log     *zap.SugaredLogger
 
 	renewalOnce sync.Once
@@ -95,7 +79,7 @@ func (p *WildcardManager) Get(item *wildcardItem, issueIfNotCached bool) (*tls.C
 	}
 
 	ocspKeyName := item.OCSPKeyName()
-	p.ocspMgr.Watch(ocspKeyName, func() (*tls.Certificate, error) {
+	p.server.OCSPManager.Watch(ocspKeyName, func() (*tls.Certificate, error) {
 		return p.getWildcardCertificate(item, false)
 	})
 
@@ -115,6 +99,7 @@ func (p *WildcardManager) getWildcardCertificate(item *wildcardItem, issueIfNotC
 
 	// Certificate is not cached, check storage.
 	cached, _ = p.cache.LoadOrStore(certKey, &wildcardCert{
+		mgr:  p,
 		item: item,
 	})
 	wcCert := cached.(*wildcardCert)
@@ -126,7 +111,7 @@ func (p *WildcardManager) getWildcardCertificate(item *wildcardItem, issueIfNotC
 		return pemCert.tlscert, nil
 	}
 
-	tlscert, privPEM, pubPEM, err := loadCertificateFromStore(certKey)
+	tlscert, privPEM, pubPEM, err := p.server.LoadCertificateFromStore(certKey)
 	if err != nil && err != ErrCacheMiss {
 		return nil, fmt.Errorf("wildcard: failed load certificate: %w", err)
 	}
@@ -145,8 +130,8 @@ func (p *WildcardManager) getWildcardCertificate(item *wildcardItem, issueIfNotC
 
 	// Certificate is not available from cache, issue a new certificate.
 	p.log.Infof("issuing new certifidcate: rootDomain= %v", item.RootDomain)
-	certArgs := newLegoCertArgs(item)
-	legoCert, err := lego.IssueCertificate(certArgs)
+	certArgs := p.newLegoCertArgs(item)
+	legoCert, err := p.legoApp.IssueCertificate(certArgs)
 	if err != nil {
 		return nil, fmt.Errorf("wildcard: failed issue certificate: %w", err)
 	}
@@ -161,13 +146,10 @@ func (p *WildcardManager) getWildcardCertificate(item *wildcardItem, issueIfNotC
 	return legoCert.Certificate, nil
 }
 
-func newLegoCertArgs(wcItem *wildcardItem) *lego.CertArgs {
-	cfg := Cfg
+func (p *WildcardManager) newLegoCertArgs(wcItem *wildcardItem) *lego.CertArgs {
+	cfg := p.server.Cfg
 	cred := cfg.Wildcard.credentialMap[wcItem.Credential]
 	return &lego.CertArgs{
-		DataPath:   cfg.Wildcard.LegoDataPath,
-		Email:      cfg.LetsEncrypt.Email,
-		Server:     cfg.LetsEncrypt.DirectoryURL,
 		DnsCode:    cred.Provider,
 		Env:        cred.Env,
 		RootDomain: wcItem.RootDomain,
@@ -189,7 +171,7 @@ func (p *WildcardManager) startRenewal() {
 
 func (p *WildcardManager) doRenew() {
 
-	cfg := Cfg
+	cfg := p.server.Cfg
 	renewDur := 24 * time.Hour * time.Duration(cfg.LetsEncrypt.RenewBefore)
 
 	var wg sync.WaitGroup
@@ -224,9 +206,8 @@ func (p *WildcardManager) doRenew() {
 }
 
 func (p *WildcardManager) renewCertificate(wcCert *wildcardCert) {
-	cfg := Cfg
-
-	certArgs := newLegoCertArgs(wcCert.item)
+	cfg := p.server.Cfg
+	certArgs := p.newLegoCertArgs(wcCert.item)
 	certArgs.RenewOpts.Days = cfg.LetsEncrypt.RenewBefore
 	certArgs.RenewOpts.ReuseKey = true
 
@@ -240,7 +221,7 @@ func (p *WildcardManager) renewCertificate(wcCert *wildcardCert) {
 	}
 
 	p.log.Infof("renewing certificate: rootDomain= %v", wcCert.item.RootDomain)
-	newCert, err := lego.RenewCertificate(certArgs, oldCert)
+	newCert, err := p.legoApp.RenewCertificate(certArgs, oldCert)
 	if err != nil {
 		p.log.Errorf("failed renew certificate: rootDomain= %v err= %v", wcCert.item.RootDomain, err)
 		return

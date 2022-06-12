@@ -68,20 +68,19 @@ func RegexpWhitelist(patterns ...*regexp.Regexp) autocert.HostPolicy {
 	}
 }
 
-func NewManager(wildcard *WildcardManager, managed *ManagedCertManager, ocspMgr *OCSPManager) *Manager {
+func NewManager(server *Server) *Manager {
+	cfg := server.Cfg
 	manager := &Manager{
 		autocert: &autocert.Manager{
 			Prompt:      autocert.AcceptTOS,
-			Cache:       Cfg.Storage.Cache,
-			RenewBefore: time.Duration(Cfg.LetsEncrypt.RenewBefore) * 24 * time.Hour,
-			Client:      &acme.Client{DirectoryURL: Cfg.LetsEncrypt.DirectoryURL},
-			Email:       Cfg.LetsEncrypt.Email,
-			HostPolicy:  Cfg.LetsEncrypt.HostPolicy,
+			Cache:       cfg.Storage.Cache,
+			RenewBefore: time.Duration(cfg.LetsEncrypt.RenewBefore) * 24 * time.Hour,
+			Client:      &acme.Client{DirectoryURL: cfg.LetsEncrypt.DirectoryURL},
+			Email:       cfg.LetsEncrypt.Email,
+			HostPolicy:  cfg.LetsEncrypt.HostPolicy,
 		},
-		ForceRSA: Cfg.LetsEncrypt.ForceRSA,
-		wildcard: wildcard,
-		managed:  managed,
-		ocspMgr:  ocspMgr,
+		ForceRSA: cfg.LetsEncrypt.ForceRSA,
+		server:   server,
 		log:      zlog.Named("manager").Sugar(),
 	}
 	return manager
@@ -91,10 +90,8 @@ type Manager struct {
 	autocert *autocert.Manager
 	ForceRSA bool
 
-	wildcard *WildcardManager
-	managed  *ManagedCertManager
-	ocspMgr  *OCSPManager
-	log      *zap.SugaredLogger
+	server *Server
+	log    *zap.SugaredLogger
 }
 
 func (m *Manager) GetACMEAccount(ctx context.Context) (*acme.Account, *ecdsa.PrivateKey, error) {
@@ -154,7 +151,7 @@ func (m *Manager) GetAutocertCertificate(name string) (*tls.Certificate, error) 
 
 func (m *Manager) watchCert(name string) {
 	ocspKeyName := m.OCSPKeyName(name)
-	m.ocspMgr.Watch(ocspKeyName, func() (*tls.Certificate, error) {
+	m.server.OCSPManager.Watch(ocspKeyName, func() (*tls.Certificate, error) {
 		helloInfo := m.helloInfo(name)
 		return m.autocert.GetCertificate(helloInfo)
 	})

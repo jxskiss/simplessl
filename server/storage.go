@@ -18,21 +18,22 @@ func NewDirCache(cacheDir string) (autocert.Cache, error) {
 	return autocert.DirCache(cacheDir), nil
 }
 
-// loadCertificateFromStore loads certificate from storage, if the certificate
+// LoadCertificateFromStore loads certificate from storage, if the certificate
 // exists and is valid, it will be returned, or an error otherwise.
-func loadCertificateFromStore(certKey string) (tlscert *tls.Certificate, keyPEM, certPEM []byte, err error) {
+func (p *Server) LoadCertificateFromStore(certKey string) (tlscert *tls.Certificate, keyPEM, certPEM []byte, err error) {
 	ctx := context.Background()
-	data, err := Cfg.Storage.Cache.Get(ctx, certKey)
+	data, err := p.Cfg.Storage.Cache.Get(ctx, certKey)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	return utils.ParseCertificate(data)
 }
 
-func saveCertificateToStore(certKey string, privPEM, pubPEM []byte) error {
+// SaveCertificateToStore saves certificate to storage.
+func (p *Server) SaveCertificateToStore(certKey string, privPEM, pubPEM []byte) error {
 	ctx := context.Background()
 	certBytes := utils.ConcatPrivAndPubKey(privPEM, pubPEM)
-	err := Cfg.Storage.Cache.Put(ctx, certKey, certBytes)
+	err := p.Cfg.Storage.Cache.Put(ctx, certKey, certBytes)
 	if err != nil {
 		return err
 	}

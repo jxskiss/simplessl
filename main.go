@@ -15,7 +15,6 @@ import (
 	"github.com/jxskiss/gopkg/v2/zlog"
 	"github.com/jxskiss/mcli"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/lego"
 	"github.com/jxskiss/ssl-cert-server/pkg/utils"
 	"github.com/jxskiss/ssl-cert-server/server"
 )
@@ -59,23 +58,20 @@ func cmdPrintVersion() {
 	fmt.Printf("ssl-cert-server v%s-%s\n", VERSION, gitRevision)
 }
 
-func initConfigAndCreateServer(opts server.Opts) *server.Server {
-	server.InitConfig(opts)
-	svr := server.NewServer()
-	return svr
+func initConfigAndCreateServer(opts server.Opts) (*server.Config, *server.Server) {
+	cfg := server.InitConfig(opts)
+	svr, err := server.NewServer(cfg)
+	if err != nil {
+		zlog.Fatalf("config: failed initialize server: %v", err)
+	}
+	return cfg, svr
 }
 
 func cmdRunServer() {
 	var opts server.Opts
 	mcli.Parse(&opts)
 
-	cfg := server.Cfg
-	svr := initConfigAndCreateServer(opts)
-
-	// Setup Lego application.
-	if len(cfg.Wildcard.Certificates) > 0 {
-		setupLegoApp(svr.AutocertMgr)
-	}
+	cfg, svr := initConfigAndCreateServer(opts)
 
 	mux := http.NewServeMux()
 	svr.AutocertMgr.BuildRoutes(mux)
@@ -138,23 +134,6 @@ func cmdRunServer() {
 		zlog.Infof("server: shutdown gracefully")
 	} else {
 		zlog.Warnf("server: failed graceful shutdown: %v", err)
-	}
-}
-
-func setupLegoApp(mgr *server.Manager) {
-	cfg := server.Cfg
-	ctx := context.Background()
-	acmeAccount, privKey, err := mgr.GetACMEAccount(ctx)
-	if err != nil {
-		zlog.Fatalf("server: failed get ACME account: %v", err)
-	}
-	legoAcc, err := lego.FromACMEAccount(cfg.LetsEncrypt.Email, acmeAccount, privKey)
-	if err != nil {
-		zlog.Fatalf("server: failed convert ACME account: %v", err)
-	}
-	err = lego.SetupApp(cfg.Wildcard.LegoDataPath, legoAcc)
-	if err != nil {
-		zlog.Fatalf("server: failed setup Lego app: %v", err)
 	}
 }
 

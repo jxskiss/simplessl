@@ -99,7 +99,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 		}
 		ttlSeconds = m.limitTTL(ttl)
 	}
-	response, err := marshalCertificate(tlscert, certType, ttlSeconds)
+	response, err := m.marshalCertificate(tlscert, certType, ttlSeconds)
 	if err != nil {
 		m.log.Errorf("failed marshal certificate: domain= %s err= %v", domain, err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -110,7 +110,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	w.Write(response)
 }
 
-func marshalCertificate(cert *tls.Certificate, certType int, ttl int) ([]byte, error) {
+func (m *Manager) marshalCertificate(cert *tls.Certificate, certType int, ttl int) ([]byte, error) {
 	var (
 		err        error
 		certBuf    bytes.Buffer
@@ -159,15 +159,16 @@ func marshalCertificate(cert *tls.Certificate, certType int, ttl int) ([]byte, e
 }
 
 func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, certType int, err error) {
+	cfg := m.server.Cfg
 	// check managed domains first
-	if certKey, ok := IsManagedDomain(name); ok {
+	if certKey, ok := cfg.IsManagedDomain(name); ok {
 		certType = Managed
-		tlscert, err = m.managed.Get(certKey)
+		tlscert, err = m.server.ManagedMgr.Get(certKey)
 	} else
 	// check wildcard domains
-	if wcItem, ok := IsWildcardDomain(name); ok {
+	if wcItem, ok := cfg.IsWildcardDomain(name); ok {
 		certType = Wildcard
-		tlscert, err = m.wildcard.Get(wcItem, true)
+		tlscert, err = m.server.WildcardMgr.Get(wcItem, true)
 	} else
 	// check concrete domains
 	if err = m.autocert.HostPolicy(context.Background(), name); err == nil {
@@ -175,9 +176,9 @@ func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, c
 		tlscert, err = m.GetAutocertCertificate(name)
 	} else
 	// check self-signed
-	if IsSelfSignedAllowed(name) {
+	if cfg.IsSelfSignedAllowed(name) {
 		certType = SelfSigned
-		tlscert, err = GetSelfSignedCertificate()
+		tlscert, err = m.server.GetSelfSignedCertificate()
 	} else
 	// host not allowed
 	{
@@ -232,13 +233,14 @@ func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) GetOCSPStaplingByName(name string, fingerprint string) ([]byte, time.Time, error) {
+	cfg := m.server.Cfg
 	var keyName string
 	// check managed domains first
-	if certKey, ok := IsManagedDomain(name); ok {
+	if certKey, ok := cfg.IsManagedDomain(name); ok {
 		keyName = managedCertOCSPKeyName(certKey)
 	} else
 	// check wildcard domains
-	if wcItem, ok := IsWildcardDomain(name); ok {
+	if wcItem, ok := cfg.IsWildcardDomain(name); ok {
 		keyName = wcItem.OCSPKeyName()
 	} else
 	// check concrete domains
@@ -252,7 +254,7 @@ func (m *Manager) GetOCSPStaplingByName(name string, fingerprint string) ([]byte
 	checkCacheCert := func() (*tls.Certificate, error) {
 		return m.getCachedCertificateForOCSPStapling(name)
 	}
-	return m.ocspMgr.GetOCSPStapling(keyName, fingerprint, checkCacheCert)
+	return m.server.OCSPManager.GetOCSPStapling(keyName, fingerprint, checkCacheCert)
 }
 
 func (m *Manager) limitTTL(ttl time.Duration) int {

@@ -47,11 +47,11 @@ func (m *Manager) getCachedCertificateForOCSPStapling(name string) (
 	cert *tls.Certificate,
 	err error,
 ) {
-	if ck, ok := IsManagedDomain(name); ok {
-		return m.managed.Get(ck)
+	if ck, ok := m.server.Cfg.IsManagedDomain(name); ok {
+		return m.server.ManagedMgr.Get(ck)
 	}
-	if wcItem, ok := IsWildcardDomain(name); ok {
-		return m.wildcard.Get(wcItem, false)
+	if wcItem, ok := m.server.Cfg.IsWildcardDomain(name); ok {
+		return m.server.WildcardMgr.Get(wcItem, false)
 	}
 
 	// Else check cached certificates from Let's Encrypt, but don't trigger

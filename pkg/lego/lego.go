@@ -1,6 +1,7 @@
 package lego
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -15,11 +16,16 @@ import (
 	"github.com/jxskiss/ssl-cert-server/pkg/utils"
 )
 
-var app *cli.App
+type App struct {
+	dataPath  string
+	serverURL string
+	acc       *Account
+	app       *cli.App
+}
 
-func SetupApp(dataPath string, acc *Account) error {
+func NewApp(dataPath, serverURL string, acc *Account) (*App, error) {
 	if dataPath == "" {
-		panic("dataPath must be specified")
+		return nil, errors.New("data path must be specified")
 	}
 
 	// Setup custom logger.
@@ -28,18 +34,24 @@ func SetupApp(dataPath string, acc *Account) error {
 	// Save account data to storage.
 	err := acc.Save(dataPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	app = cli.NewApp()
-	app.Before = cmd.Before
-	app.Flags = cmd.CreateFlags(dataPath)
-	app.Commands = cmd.CreateCommands()
-	return nil
+	legoApp := cli.NewApp()
+	legoApp.Before = cmd.Before
+	legoApp.Flags = cmd.CreateFlags(dataPath)
+	legoApp.Commands = cmd.CreateCommands()
+	app := &App{
+		dataPath:  dataPath,
+		serverURL: serverURL,
+		acc:       acc,
+		app:       legoApp,
+	}
+	return app, nil
 }
 
-func IssueCertificate(args *CertArgs) (*Certificate, error) {
-	err := args.execRunCommand()
+func (p *App) IssueCertificate(args *CertArgs) (*Certificate, error) {
+	err := p.execRunCommand(args)
 	if err != nil {
 		return nil, fmt.Errorf("run command 'lego new': %w", err)
 	}
@@ -48,59 +60,11 @@ func IssueCertificate(args *CertArgs) (*Certificate, error) {
 		RootDomain: args.RootDomain,
 		Domains:    args.Domains,
 	}
-	err = cert.Load(args.DataPath)
+	err = cert.Load(p.dataPath)
 	if err != nil {
 		return nil, fmt.Errorf("load certificate: %w", err)
 	}
 	return cert, nil
-}
-
-func RenewCertificate(args *CertArgs, cert *Certificate) (*Certificate, error) {
-	err := cert.Save(args.DataPath)
-	if err != nil {
-		return nil, fmt.Errorf("save certificate: %w", err)
-	}
-
-	err = args.execRenewCommand()
-	if err != nil {
-		return nil, fmt.Errorf("run command 'lego renew': %w", err)
-	}
-
-	newCert := &Certificate{
-		RootDomain: args.RootDomain,
-		Domains:    args.Domains,
-	}
-	err = newCert.Load(args.DataPath)
-	if err != nil {
-		return nil, fmt.Errorf("load certificate: %w", err)
-	}
-	return newCert, nil
-}
-
-// sanitizedDomain Make sure no funny chars are in the cert names (like wildcards ;)).
-func sanitizedDomain(domain string) string {
-	safe, err := idna.ToASCII(strings.ReplaceAll(domain, "*", "_"))
-	if err != nil {
-		zlog.Fatalf("cannot sanitize domain: %skip2", domain)
-	}
-	return safe
-}
-
-type CertArgs struct {
-	DataPath string
-
-	Email      string
-	Server     string
-	DnsCode    string
-	Env        map[string]string
-	RootDomain string
-	Domains    []string
-	Hook       string
-
-	RenewOpts struct {
-		ReuseKey bool
-		Days     int
-	}
 }
 
 /*
@@ -120,31 +84,53 @@ OPTIONS:
 
 */
 
-func (p *CertArgs) execRunCommand() (err error) {
-	args := []string{
+func (p *App) execRunCommand(certArgs *CertArgs) (err error) {
+	cmdArgs := []string{
 		"lego",
 		"--accept-tos",
-		"--server", p.Server,
-		"--email", p.Email,
-		"--dns", p.DnsCode,
+		"--server", p.serverURL,
+		"--email", p.acc.Email,
+		"--dns", certArgs.DnsCode,
 	}
-	for _, dom := range p.Domains {
-		args = append(args, "--domains", dom)
+	for _, dom := range certArgs.Domains {
+		cmdArgs = append(cmdArgs, "--domains", dom)
 	}
 	runArgs := []string{"run"}
-	if p.Hook != "" {
-		runArgs = append(runArgs, "--run-hook", p.Hook)
+	if certArgs.Hook != "" {
+		runArgs = append(runArgs, "--run-hook", certArgs.Hook)
 	}
-	args = append(args, runArgs...)
+	cmdArgs = append(cmdArgs, runArgs...)
 
-	for k, v := range p.Env {
+	for k, v := range certArgs.Env {
 		err = os.Setenv(k, v)
 		if err != nil {
 			return fmt.Errorf("cannot set env %q: %w", k, err)
 		}
 	}
-	err = app.Run(args)
+	err = p.app.Run(cmdArgs)
 	return err
+}
+
+func (p *App) RenewCertificate(args *CertArgs, cert *Certificate) (*Certificate, error) {
+	err := cert.Save(p.dataPath)
+	if err != nil {
+		return nil, fmt.Errorf("save certificate: %w", err)
+	}
+
+	err = p.execRenewCommand(args)
+	if err != nil {
+		return nil, fmt.Errorf("run command 'lego renew': %w", err)
+	}
+
+	newCert := &Certificate{
+		RootDomain: args.RootDomain,
+		Domains:    args.Domains,
+	}
+	err = newCert.Load(p.dataPath)
+	if err != nil {
+		return nil, fmt.Errorf("load certificate: %w", err)
+	}
+	return newCert, nil
 }
 
 /*
@@ -166,35 +152,57 @@ OPTIONS:
 
 */
 
-func (p *CertArgs) execRenewCommand() (err error) {
-	args := []string{
+func (p *App) execRenewCommand(certArgs *CertArgs) (err error) {
+	cmdArgs := []string{
 		"lego",
 		"--accept-tos",
-		"--server", p.Server,
-		"--email", p.Email,
-		"--dns", p.DnsCode,
+		"--server", p.serverURL,
+		"--email", p.acc.Email,
+		"--dns", certArgs.DnsCode,
 	}
-	for _, dom := range p.Domains {
-		args = append(args, "--domains", dom)
+	for _, dom := range certArgs.Domains {
+		cmdArgs = append(cmdArgs, "--domains", dom)
 	}
 	renewArgs := []string{"renew"}
-	renewArgs = append(renewArgs, "--days", fmt.Sprint(p.RenewOpts.Days))
-	if p.RenewOpts.ReuseKey {
+	renewArgs = append(renewArgs, "--days", fmt.Sprint(certArgs.RenewOpts.Days))
+	if certArgs.RenewOpts.ReuseKey {
 		renewArgs = append(renewArgs, "--reuse-key")
 	}
-	if p.Hook != "" {
-		renewArgs = append(renewArgs, "--renew-hook", p.Hook)
+	if certArgs.Hook != "" {
+		renewArgs = append(renewArgs, "--renew-hook", certArgs.Hook)
 	}
-	args = append(args, renewArgs...)
+	cmdArgs = append(cmdArgs, renewArgs...)
 
-	for k, v := range p.Env {
+	for k, v := range certArgs.Env {
 		err = os.Setenv(k, v)
 		if err != nil {
 			return fmt.Errorf("cannot set env %q: %w", k, err)
 		}
 	}
-	err = app.Run(args)
+	err = p.app.Run(cmdArgs)
 	return err
+}
+
+// sanitizedDomain Make sure no funny chars are in the cert names (like wildcards ;)).
+func sanitizedDomain(domain string) string {
+	safe, err := idna.ToASCII(strings.ReplaceAll(domain, "*", "_"))
+	if err != nil {
+		zlog.Fatalf("cannot sanitize domain: %skip2", domain)
+	}
+	return safe
+}
+
+type CertArgs struct {
+	DnsCode    string
+	Env        map[string]string
+	RootDomain string
+	Domains    []string
+	Hook       string
+
+	RenewOpts struct {
+		ReuseKey bool
+		Days     int
+	}
 }
 
 func writeFile(name string, data []byte, perm os.FileMode) error {

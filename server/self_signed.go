@@ -25,24 +25,12 @@ var (
 	selfSignedFingerprint atomic.Value // string
 )
 
-func IsSelfSignedAllowed(domain string) bool {
-	if !Cfg.SelfSigned.Enable {
-		return false
-	}
-	if Cfg.SelfSigned.CheckSNI {
-		if err := checkHostIsValid(context.Background(), domain); err != nil {
-			return false
-		}
-	}
-	return true
-}
-
 func IsSelfSignedCertificate(fingerprint string) bool {
 	fp, _ := selfSignedFingerprint.Load().(string)
 	return fingerprint == fp
 }
 
-func GetSelfSignedCertificate() (*tls.Certificate, error) {
+func (p *Server) GetSelfSignedCertificate() (*tls.Certificate, error) {
 	if tlscert, ok := selfSignedCert.Load().(*tls.Certificate); ok {
 		return tlscert, nil
 	}
@@ -54,7 +42,7 @@ func GetSelfSignedCertificate() (*tls.Certificate, error) {
 	}
 
 	// check storage first
-	tlscert, _, _, err := loadCertificateFromStore(Cfg.SelfSigned.CertKey)
+	tlscert, _, _, err := p.LoadCertificateFromStore(p.Cfg.SelfSigned.CertKey)
 	if err != nil && err != ErrCacheMiss {
 		return nil, fmt.Errorf("self_signed: %v", err)
 	}
@@ -66,7 +54,7 @@ func GetSelfSignedCertificate() (*tls.Certificate, error) {
 	}
 
 	// cache not available, create new certificate
-	tlscert, err = createAndSaveSelfSignedCertificate()
+	tlscert, err = p.createAndSaveSelfSignedCertificate()
 	if err != nil {
 		return nil, err
 	}
@@ -76,16 +64,17 @@ func GetSelfSignedCertificate() (*tls.Certificate, error) {
 	return tlscert, nil
 }
 
-func createAndSaveSelfSignedCertificate() (*tls.Certificate, error) {
-	validDays := Cfg.SelfSigned.ValidDays
-	organization := Cfg.SelfSigned.Organization
+func (p *Server) createAndSaveSelfSignedCertificate() (*tls.Certificate, error) {
+	cfg := p.Cfg
+	validDays := cfg.SelfSigned.ValidDays
+	organization := cfg.SelfSigned.Organization
 	certPEM, privKeyPEM, err := CreateSelfSignedCertificate(validDays, organization)
 	if err != nil {
 		return nil, err
 	}
 
 	cacheData := append(privKeyPEM, certPEM...)
-	err = Cfg.Storage.Cache.Put(context.Background(), Cfg.SelfSigned.CertKey, cacheData)
+	err = cfg.Storage.Cache.Put(context.Background(), cfg.SelfSigned.CertKey, cacheData)
 	if err != nil {
 		return nil, fmt.Errorf("self_signed: failed put certificate: %v", err)
 	}
