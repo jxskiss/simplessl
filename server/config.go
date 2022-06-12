@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -128,12 +129,6 @@ func (p *config) setupDefaultOptions() {
 	setDefault(&p.Storage.Type, StorageTypeDirCache)
 	setDefault(&p.Storage.DirCache, "./secret-dir")
 	setDefault(&p.Storage.Redis.Addr, "127.0.0.1:6379")
-	if p.Storage.Type == StorageTypeDirCache {
-		err := createNonExistingFolder(p.Storage.DirCache)
-		if err != nil {
-			zlog.Fatalf("server: failed prepare dir_cache: %v", err)
-		}
-	}
 
 	setDefault(&p.LetsEncrypt.RenewBefore, 30)
 	if p.LetsEncrypt.Staging {
@@ -196,9 +191,9 @@ func (p *config) buildHostPolicy() {
 func (p *config) prepareWildcardConfig() error {
 	credentialMap := make(map[string]*dnsCredential, len(p.Wildcard.DNSCredentials))
 	for _, cred := range p.Wildcard.DNSCredentials {
-
-		// TODO: validate credential config
-
+		if cred.Name == "" || cred.Provider == "" {
+			return fmt.Errorf("dns credential's name/provider cannot be empty")
+		}
 		if _, ok := credentialMap[cred.Name]; ok {
 			return fmt.Errorf("dns credential %s is duplicate", cred.Name)
 		}
@@ -208,14 +203,17 @@ func (p *config) prepareWildcardConfig() error {
 
 	certRootDomainSet := set.New[string]()
 	for _, cert := range p.Wildcard.Certificates {
-
-		// TODO: validate certificate config
-
+		if cert.RootDomain == "" {
+			return fmt.Errorf("certificate root domain cannot be empty")
+		}
 		if certRootDomainSet.Contains(cert.RootDomain) {
 			return fmt.Errorf("certificate root domain %s is duplicate", cert.RootDomain)
 		}
 		if credentialMap[cert.Credential] == nil {
 			return fmt.Errorf("dns credential %s is not configrured", cert.Credential)
+		}
+		if err := validateWildcardDomains(cert.Domains); err != nil {
+			return err
 		}
 		p.Wildcard.certificateList = append(p.Wildcard.certificateList, cert)
 	}
@@ -293,11 +291,17 @@ func checkHostIsValid(ctx context.Context, host string) (err error) {
 	return nil
 }
 
-func createNonExistingFolder(path string) error {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return os.MkdirAll(path, 0o700)
-	} else if err != nil {
-		return err
+var wildcardDomainRE = regexp.MustCompile(`^(\*\.)?([\w-]+\.)+\w+$`)
+
+func validateWildcardDomains(domains []string) error {
+	if len(domains) == 0 {
+		return errors.New("must have at least one domain")
+	}
+	for _, domain := range domains {
+		isValid := wildcardDomainRE.MatchString(domain)
+		if !isValid {
+			return fmt.Errorf("domain name %q is invalid", domain)
+		}
 	}
 	return nil
 }

@@ -6,19 +6,32 @@ import (
 	"strings"
 	_ "unsafe"
 
+	"github.com/jxskiss/gopkg/v2/forceexport"
+	"github.com/jxskiss/gopkg/v2/reflectx"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
+
+func init() {
+	_certKey_typ := reflectx.RTypeOf(_certKey{})
+	autocert_certKey_typ := forceexport.GetType("golang.org/x/crypto/acme/autocert.certKey")
+	isSameField := func(i int) bool {
+		f1 := _certKey_typ.Field(i)
+		f2 := autocert_certKey_typ.Field(i)
+		return f1.Name == f2.Name && f1.Type == f2.Type && f1.Offset == f2.Offset
+	}
+	for i := 0; i < _certKey_typ.NumField(); i++ {
+		if !isSameField(i) {
+			panic("autocert.certKey has been changed, unsafe tricks won't work")
+		}
+	}
+}
 
 // _certKey is copied from autocert.certKey.
 type _certKey struct {
 	domain  string // without trailing dot
 	isRSA   bool   // RSA cert for legacy clients (as opposed to default ECDSA)
 	isToken bool   // tls-based challenge token cert; key type is undefined regardless of isRSA
-}
-
-func init() {
-	// TODO: assert _certkey equality
 }
 
 //go:linkname _autocert_Manager_cert golang.org/x/crypto/acme/autocert.(*Manager).cert
