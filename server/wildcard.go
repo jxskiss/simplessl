@@ -144,6 +144,7 @@ func (p *WildcardManager) getWildcardCertificate(item *wildcardItem, issueIfNotC
 	}
 
 	// Certificate is not available from cache, issue a new certificate.
+	p.log.Infof("issuing new certifidcate: rootDomain= %v", item.RootDomain)
 	certArgs := newLegoCertArgs(item)
 	legoCert, err := lego.IssueCertificate(certArgs)
 	if err != nil {
@@ -176,7 +177,7 @@ func newLegoCertArgs(wcItem *wildcardItem) *lego.CertArgs {
 }
 
 func (p *WildcardManager) startRenewal() {
-	tickInterval := time.Minute
+	tickInterval := 10 * time.Minute
 	go func() {
 		ticker := time.NewTicker(tickInterval)
 		defer ticker.Stop()
@@ -203,7 +204,7 @@ func (p *WildcardManager) doRenew() {
 		if time.Until(pemCert.tlscert.Leaf.NotAfter) > renewDur {
 			return true
 		}
-		if atomic.CompareAndSwapUint32(&wcCert.renewing, 0, 1) {
+		if !atomic.CompareAndSwapUint32(&wcCert.renewing, 0, 1) {
 			return true
 		}
 
@@ -238,6 +239,7 @@ func (p *WildcardManager) renewCertificate(wcCert *wildcardCert) {
 		Certificate: pemCert.tlscert,
 	}
 
+	p.log.Infof("renewing certificate: rootDomain= %v", wcCert.item.RootDomain)
 	newCert, err := lego.RenewCertificate(certArgs, oldCert)
 	if err != nil {
 		p.log.Errorf("failed renew certificate: rootDomain= %v err= %v", wcCert.item.RootDomain, err)

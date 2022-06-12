@@ -8,7 +8,6 @@ require (
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/jxskiss/gopkg/v2 v2.0.0-alpha.5.0.20220611093926-2e251260ff75
 	github.com/jxskiss/mcli v0.2.1
-	github.com/klauspost/cpuid v1.3.1
 	github.com/stretchr/testify v1.7.2
 	github.com/urfave/cli/v2 v2.3.0
 	go.uber.org/zap v1.21.0
