@@ -191,6 +191,11 @@ func main() {
 
 ## Change history
 
+### v0.4.3 @ 2022-05-17
+
+- fix: OCSP stapling which failed because the wrong certificate was selected as issuer certificate, thanks @cedricdubois (#6)
+- new: optional "prefix" option for Redis storage
+
 ### v0.4.2 @ 2021-06-02
 
 - fix: request failed when only configured default cert available, #2
