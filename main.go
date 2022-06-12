@@ -25,21 +25,26 @@ func main() {
 	zlog.SetDevelopment()
 	defer zlog.Sync()
 
-	if len(os.Args) < 2 {
-		os.Args = append(os.Args, "run")
-	} else if strings.HasPrefix(os.Args[1], "-") &&
-		os.Args[1] != "-h" {
-		modifiedArgs := os.Args[:1:1]
-		modifiedArgs = append(modifiedArgs, "run")
-		modifiedArgs = append(modifiedArgs, os.Args[1:]...)
-		os.Args = modifiedArgs
-	}
+	// Fix command line args to be compatible with old versions.
+	os.Args = fixCommandLineArgs(os.Args)
 
 	mcli.AddHelp()
 	mcli.Add("run", cmdRunServer, "Run certificate server")
 	mcli.Add("generate-self-signed", cmdGenerateSelfSignedCertificate, "Generate self-signed certificate")
 	mcli.Add("version", cmdPrintVersion, "Print version information")
 	mcli.Run()
+}
+
+func fixCommandLineArgs(osArgs []string) []string {
+	var fixedArgs = osArgs
+	if len(osArgs) < 2 {
+		fixedArgs = append(os.Args, "run")
+	} else if strings.HasPrefix(os.Args[1], "-") && os.Args[1] != "-h" {
+		fixedArgs = os.Args[:1:1]
+		fixedArgs = append(fixedArgs, "run")
+		fixedArgs = append(fixedArgs, os.Args[1:]...)
+	}
+	return fixedArgs
 }
 
 func cmdPrintVersion() {
@@ -74,7 +79,7 @@ func cmdRunServer() {
 	cfg, svr := initConfigAndCreateServer(opts)
 
 	mux := http.NewServeMux()
-	svr.AutocertMgr.BuildRoutes(mux)
+	svr.BuildRoutes(mux)
 
 	// Graceful restarts.
 	upg, err := tableflip.New(tableflip.Options{
@@ -141,7 +146,7 @@ func cmdGenerateSelfSignedCertificate() {
 	var opts struct {
 		ValidDays     int      `cli:"--valid-days, number of days the cert is valid for" default:"365"`
 		Out           string   `cli:"--out, output single file contains both private key and certificate" default:"./self_signed"`
-		CertOut       string   `cli:"--cert-out, output certificate file" default:"./self_signed.cert"`
+		CertOut       string   `cli:"--cert-out, output certificate file" default:"./self_signed.crt"`
 		KeyOut        string   `cli:"--key-out, output private key file" default:"./self_signed.key"`
 		Organizations []string `cli:"--organization, certificate organization (may be given multiple times)"`
 	}

@@ -42,7 +42,8 @@ func (p *Server) GetSelfSignedCertificate() (*tls.Certificate, error) {
 	}
 
 	// check storage first
-	tlscert, _, _, err := p.LoadCertificateFromStore(p.Cfg.SelfSigned.CertKey)
+	certKey := p.cfg.SelfSigned.CertKey
+	tlscert, _, _, err := p.stor.LoadCertificateFromStore(certKey)
 	if err != nil && err != ErrCacheMiss {
 		return nil, fmt.Errorf("self_signed: %v", err)
 	}
@@ -65,7 +66,7 @@ func (p *Server) GetSelfSignedCertificate() (*tls.Certificate, error) {
 }
 
 func (p *Server) createAndSaveSelfSignedCertificate() (*tls.Certificate, error) {
-	cfg := p.Cfg
+	cfg := p.cfg
 	validDays := cfg.SelfSigned.ValidDays
 	organization := cfg.SelfSigned.Organization
 	certPEM, privKeyPEM, err := CreateSelfSignedCertificate(validDays, organization)

@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	mathrand "math/rand"
 	"net"
 	"net/http"
 	"regexp"
@@ -24,11 +23,10 @@ const stagingDirectoryURL = "https://acme-staging-v02.api.letsencrypt.org/direct
 // The OCSP server of Let's Encrypt certificates seems working improperly, gives
 // `Unsolicited response received on idle HTTP channel starting with "HTTP/1.0 408 Request Time-out"`
 // errors constantly after the service has been running for a long time.
-// Using custom httpClient which disables Keep-Alive should fix this issue.
+// Using custom httpClient which disables Keep-Alive fixes this issue.
 var httpClient *http.Client
 
 func init() {
-	mathrand.Seed(timeNow().UnixNano())
 	httpClient = &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
@@ -68,9 +66,8 @@ func RegexpWhitelist(patterns ...*regexp.Regexp) autocert.HostPolicy {
 	}
 }
 
-func NewManager(server *Server) *Manager {
-	cfg := server.Cfg
-	manager := &Manager{
+func NewAutocertManager(cfg *Config, ocspMgr *OCSPManager) *AutocertManager {
+	manager := &AutocertManager{
 		autocert: &autocert.Manager{
 			Prompt:      autocert.AcceptTOS,
 			Cache:       cfg.Storage.Cache,
@@ -79,22 +76,21 @@ func NewManager(server *Server) *Manager {
 			Email:       cfg.LetsEncrypt.Email,
 			HostPolicy:  cfg.LetsEncrypt.HostPolicy,
 		},
-		ForceRSA: cfg.LetsEncrypt.ForceRSA,
-		server:   server,
+		forceRSA: cfg.LetsEncrypt.ForceRSA,
+		ocspMgr:  ocspMgr,
 		log:      zlog.Named("manager").Sugar(),
 	}
 	return manager
 }
 
-type Manager struct {
+type AutocertManager struct {
 	autocert *autocert.Manager
-	ForceRSA bool
-
-	server *Server
-	log    *zap.SugaredLogger
+	forceRSA bool
+	ocspMgr  *OCSPManager
+	log      *zap.SugaredLogger
 }
 
-func (m *Manager) GetACMEAccount(ctx context.Context) (*acme.Account, *ecdsa.PrivateKey, error) {
+func (m *AutocertManager) GetACMEAccount(ctx context.Context) (*acme.Account, *ecdsa.PrivateKey, error) {
 	acmeCli, err := _autocert_Manager_acmeClient(m.autocert, ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot get ACME client: %w", err)
@@ -106,20 +102,20 @@ func (m *Manager) GetACMEAccount(ctx context.Context) (*acme.Account, *ecdsa.Pri
 	return account, acmeCli.Key.(*ecdsa.PrivateKey), nil
 }
 
-func (m *Manager) KeyName(domain string) string {
-	if !m.ForceRSA {
+func (m *AutocertManager) KeyName(domain string) string {
+	if !m.forceRSA {
 		return domain
 	}
 	return domain + "+rsa"
 }
 
-func (m *Manager) OCSPKeyName(domain string) string {
+func (m *AutocertManager) OCSPKeyName(domain string) string {
 	return fmt.Sprintf("autocert|%s", m.KeyName(domain))
 }
 
-func (m *Manager) helloInfo(domain string) *tls.ClientHelloInfo {
+func (m *AutocertManager) helloInfo(domain string) *tls.ClientHelloInfo {
 	helloInfo := &tls.ClientHelloInfo{ServerName: domain}
-	if !m.ForceRSA {
+	if !m.forceRSA {
 		helloInfo.SignatureSchemes = append(helloInfo.SignatureSchemes,
 			tls.ECDSAWithP256AndSHA256,
 			tls.ECDSAWithP384AndSHA384,
@@ -139,7 +135,7 @@ func (m *Manager) helloInfo(domain string) *tls.ClientHelloInfo {
 	return helloInfo
 }
 
-func (m *Manager) GetAutocertCertificate(name string) (*tls.Certificate, error) {
+func (m *AutocertManager) GetAutocertCertificate(name string) (*tls.Certificate, error) {
 	helloInfo := m.helloInfo(name)
 	cert, err := m.autocert.GetCertificate(helloInfo)
 	if err != nil {
@@ -149,22 +145,16 @@ func (m *Manager) GetAutocertCertificate(name string) (*tls.Certificate, error) 
 	return cert, nil
 }
 
-func (m *Manager) watchCert(name string) {
+func (m *AutocertManager) watchCert(name string) {
 	ocspKeyName := m.OCSPKeyName(name)
-	m.server.OCSPManager.Watch(ocspKeyName, func() (*tls.Certificate, error) {
+	m.ocspMgr.Watch(ocspKeyName, func() (*tls.Certificate, error) {
 		helloInfo := m.helloInfo(name)
 		return m.autocert.GetCertificate(helloInfo)
 	})
 }
 
-func (m *Manager) GetAutocertALPN01Certificate(name string) (*tls.Certificate, error) {
+func (m *AutocertManager) GetAutocertALPN01Certificate(name string) (*tls.Certificate, error) {
 	helloInfo := m.helloInfo(name)
 	helloInfo.SupportedProtos = []string{acme.ALPNProto}
 	return m.autocert.GetCertificate(helloInfo)
 }
-
-var rand63n = mathrand.Int63n
-
-var testOCSPDidUpdateLoop = func(next time.Duration, err error) {}
-
-var timeNow = time.Now

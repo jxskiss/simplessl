@@ -39,14 +39,14 @@ var (
 	RspErrMarshalCertificate = []byte("Error marshal certificate.")
 )
 
-func (m *Manager) BuildRoutes(mux *http.ServeMux) {
+func (p *Server) BuildRoutes(mux *http.ServeMux) {
 	accessLogger := zlog.Named("access").Sugar()
 	var _mw = func(h http.Handler) http.Handler {
-		return loggingMiddleware(accessLogger, recoverMiddleware(m.log, h))
+		return loggingMiddleware(accessLogger, recoverMiddleware(p.log, h))
 	}
-	mux.Handle("/cert/", _mw(http.HandlerFunc(m.HandleCertificate)))
-	mux.Handle("/ocsp/", _mw(http.HandlerFunc(m.HandleOCSPStapling)))
-	mux.Handle("/.well-known/acme-challenge/", _mw(m.autocert.HTTPHandler(nil)))
+	mux.Handle("/cert/", _mw(http.HandlerFunc(p.HandleCertificate)))
+	mux.Handle("/ocsp/", _mw(http.HandlerFunc(p.HandleOCSPStapling)))
+	mux.Handle("/.well-known/acme-challenge/", _mw(p.autocert.autocert.HTTPHandler(nil)))
 }
 
 // HandleCertificate handlers requests of SSL certificate.
@@ -56,11 +56,11 @@ func (m *Manager) BuildRoutes(mux *http.ServeMux) {
 // - 400 the requested domain name is invalid or not permitted
 // - 500 which indicates the server failed to process the request,
 //       in such case, the body will be filled with the error message
-func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
+func (p *Server) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/cert/")
 	domain, err := idna.Lookup.ToASCII(domain)
 	if err != nil {
-		m.log.Infof("got invalid domain name: err= %v", err)
+		p.log.Infof("got invalid domain name: err= %v", err)
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write(RspInvalidDomainName)
 		return
@@ -71,17 +71,17 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	var isALPN01 = r.URL.Query().Get("alpn") == "1"
 	if isALPN01 {
 		certType = ALPNCert
-		tlscert, err = m.GetAutocertALPN01Certificate(domain)
+		tlscert, err = p.autocert.GetAutocertALPN01Certificate(domain)
 	} else {
-		tlscert, certType, err = m.GetCertificateByName(domain)
+		tlscert, certType, err = p.GetCertificateByName(domain)
 	}
 	if err != nil {
 		if err == ErrHostNotPermitted {
-			m.log.Infof("domain name not permitted: domain= %s", domain)
+			p.log.Infof("domain name not permitted: domain= %s", domain)
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write(RspHostNotPermitted)
 		} else {
-			m.log.Errorf("failed get certificate: domain= %s err= %v", domain, err)
+			p.log.Errorf("failed get certificate: domain= %s err= %v", domain, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write(RspErrGetCertificate)
 		}
@@ -92,16 +92,16 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	if !isALPN01 {
 		var ttl = time.Until(tlscert.Leaf.NotAfter)
 		if ttl <= 0 {
-			m.log.Warnf("got expired certificate: domain= %s", domain)
+			p.log.Warnf("got expired certificate: domain= %s", domain)
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write(RspCertificateIsExpired)
 			return
 		}
-		ttlSeconds = m.limitTTL(ttl)
+		ttlSeconds = limitTTL(ttl)
 	}
-	response, err := m.marshalCertificate(tlscert, certType, ttlSeconds)
+	response, err := p.marshalCertificate(tlscert, certType, ttlSeconds)
 	if err != nil {
-		m.log.Errorf("failed marshal certificate: domain= %s err= %v", domain, err)
+		p.log.Errorf("failed marshal certificate: domain= %s err= %v", domain, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write(RspErrMarshalCertificate)
 		return
@@ -110,7 +110,7 @@ func (m *Manager) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	w.Write(response)
 }
 
-func (m *Manager) marshalCertificate(cert *tls.Certificate, certType int, ttl int) ([]byte, error) {
+func (p *Server) marshalCertificate(cert *tls.Certificate, certType int, ttl int) ([]byte, error) {
 	var (
 		err        error
 		certBuf    bytes.Buffer
@@ -158,27 +158,27 @@ func (m *Manager) marshalCertificate(cert *tls.Certificate, certType int, ttl in
 	return json.Marshal(response)
 }
 
-func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, certType int, err error) {
-	cfg := m.server.Cfg
+func (p *Server) GetCertificateByName(name string) (tlscert *tls.Certificate, certType int, err error) {
+	cfg := p.cfg
 	// check managed domains first
 	if certKey, ok := cfg.IsManagedDomain(name); ok {
 		certType = Managed
-		tlscert, err = m.server.ManagedMgr.Get(certKey)
+		tlscert, err = p.managed.Get(certKey)
 	} else
 	// check wildcard domains
 	if wcItem, ok := cfg.IsWildcardDomain(name); ok {
 		certType = Wildcard
-		tlscert, err = m.server.WildcardMgr.Get(wcItem, true)
+		tlscert, err = p.wildcard.Get(wcItem, true)
 	} else
 	// check concrete domains
-	if err = m.autocert.HostPolicy(context.Background(), name); err == nil {
+	if err = cfg.LetsEncrypt.HostPolicy(context.Background(), name); err == nil {
 		certType = LetsEncrypt
-		tlscert, err = m.GetAutocertCertificate(name)
+		tlscert, err = p.autocert.GetAutocertCertificate(name)
 	} else
 	// check self-signed
 	if cfg.IsSelfSignedAllowed(name) {
 		certType = SelfSigned
-		tlscert, err = m.server.GetSelfSignedCertificate()
+		tlscert, err = p.GetSelfSignedCertificate()
 	} else
 	// host not allowed
 	{
@@ -194,7 +194,7 @@ func (m *Manager) GetCertificateByName(name string) (tlscert *tls.Certificate, c
 // - 204 without body, which indicates OCSP stapling for the requested domain
 //       is not available, temporarily or permanently
 // - 400 which indicates the requested domain name is invalid or not permitted
-func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
+func (p *Server) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/ocsp/")
 	domain, err := idna.Lookup.ToASCII(domain)
 	if err == nil {
@@ -212,7 +212,7 @@ func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, nextUpdate, err := m.GetOCSPStaplingByName(domain, fingerprint)
+	response, nextUpdate, err := p.GetOCSPStaplingByName(domain, fingerprint)
 	if err != nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -220,11 +220,11 @@ func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 
 	var ttl = time.Until(nextUpdate)
 	if ttl <= 0 {
-		m.log.Warnf("got expired OCSP stapling: domain= %s", domain)
+		p.log.Warnf("got expired OCSP stapling: domain= %s", domain)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	ttlSeconds := m.limitTTL(ttl)
+	ttlSeconds := limitTTL(ttl)
 
 	w.Header().Set("Content-Type", "application/ocsp-response")
 	w.Header().Set("X-Expire-At", fmt.Sprintf("%d", nextUpdate.Unix()))
@@ -232,50 +232,27 @@ func (m *Manager) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 	w.Write(response)
 }
 
-func (m *Manager) GetOCSPStaplingByName(name string, fingerprint string) ([]byte, time.Time, error) {
-	cfg := m.server.Cfg
+func (p *Server) GetOCSPStaplingByName(name string, fingerprint string) ([]byte, time.Time, error) {
+	cfg := p.cfg
 	var keyName string
 	// check managed domains first
 	if certKey, ok := cfg.IsManagedDomain(name); ok {
-		keyName = managedCertOCSPKeyName(certKey)
+		keyName = p.managed.OCSPKeyName(certKey)
 	} else
 	// check wildcard domains
 	if wcItem, ok := cfg.IsWildcardDomain(name); ok {
 		keyName = wcItem.OCSPKeyName()
 	} else
 	// check concrete domains
-	if err := m.autocert.HostPolicy(context.Background(), name); err == nil {
-		keyName = m.OCSPKeyName(name)
+	if err := cfg.LetsEncrypt.HostPolicy(context.Background(), name); err == nil {
+		keyName = p.autocert.OCSPKeyName(name)
 	}
 	if keyName == "" {
 		return nil, time.Time{}, ErrStaplingNotCached
 	}
 
 	checkCacheCert := func() (*tls.Certificate, error) {
-		return m.getCachedCertificateForOCSPStapling(name)
+		return p.getCachedCertificateForOCSPStapling(name, fingerprint)
 	}
-	return m.server.OCSPManager.GetOCSPStapling(keyName, fingerprint, checkCacheCert)
-}
-
-func (m *Manager) limitTTL(ttl time.Duration) int {
-	if ttl <= 30*time.Second {
-		return 10
-	}
-	if ttl <= time.Minute {
-		return 30
-	}
-	var ttlSeconds int64 = 3600
-	if ttl < time.Hour {
-		ttlSeconds = int64(ttl.Seconds() * 0.8)
-	}
-	// add a little randomness to the TTL
-	var jitter int64 = 60
-	if ttlSeconds <= 2*jitter {
-		jitter = ttlSeconds / 2
-	}
-	n := rand63n(jitter)
-	if n < ttlSeconds {
-		ttlSeconds -= n
-	}
-	return int(ttlSeconds)
+	return p.ocspMgr.GetOCSPStapling(keyName, fingerprint, checkCacheCert)
 }

@@ -43,31 +43,15 @@ func _autocert_Manager_acmeClient(mgr *autocert.Manager, ctx context.Context) (*
 //go:linkname _autocert_supportsECDSA golang.org/x/crypto/acme/autocert.supportsECDSA
 func _autocert_supportsECDSA(hello *tls.ClientHelloInfo) bool
 
-func (m *Manager) getCachedCertificateForOCSPStapling(name string) (
-	cert *tls.Certificate,
-	err error,
-) {
-	if ck, ok := m.server.Cfg.IsManagedDomain(name); ok {
-		return m.server.ManagedMgr.Get(ck)
-	}
-	if wcItem, ok := m.server.Cfg.IsWildcardDomain(name); ok {
-		return m.server.WildcardMgr.Get(wcItem, false)
-	}
-
-	// Else check cached certificates from Let's Encrypt, but don't trigger
-	// requests to issue new certificates.
-	err = m.autocert.HostPolicy(context.Background(), name)
-	if err != nil {
-		return nil, err
-	}
+func (m *AutocertManager) GetCachedCertificate(name string) (*tls.Certificate, error) {
 	ck := _certKey{
 		domain: strings.TrimSuffix(name, "."), // golang.org/issue/18114
 		isRSA:  !_autocert_supportsECDSA(m.helloInfo(name)),
 	}
-	cert, err = _autocert_Manager_cert(m.autocert, context.Background(), ck)
+	tlscert, err := _autocert_Manager_cert(m.autocert, context.Background(), ck)
 	if err != nil {
 		return nil, err
 	}
 	m.watchCert(name)
-	return cert, nil
+	return tlscert, nil
 }

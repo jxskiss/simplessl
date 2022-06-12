@@ -27,6 +27,7 @@ const (
 
 var (
 	ErrOCSPStateNotCached = errors.New("OCSP state is not cached")
+	ErrOCSPNotSupported   = errors.New("OCSP stapling is not supported")
 	ErrStaplingNotCached  = errors.New("OCSP stapling is not cached")
 	ErrCertfuncNotFound   = errors.New("certificate func not found")
 )
@@ -82,6 +83,8 @@ func (m *OCSPManager) GetOCSPStapling(
 
 	if err != nil {
 		switch err {
+		case ErrOCSPNotSupported:
+			m.log.Infof("OCSP staplign is not supported: keyName= %s", keyName)
 		case ErrOCSPStateNotCached:
 			m.log.Infof("OCSP state is not cached: keyName= %s", keyName)
 		case ErrStaplingNotCached:
@@ -359,7 +362,7 @@ func (or *ocspRenewal) update() {
 
 func (or *ocspRenewal) next(expiry time.Time) time.Duration {
 	var d time.Duration
-	if ttl := expiry.Sub(timeNow()); ttl > renewBefore {
+	if ttl := expiry.Sub(ocspTimeNow()); ttl > renewBefore {
 		d = ttl - renewBefore
 	}
 	// add a bit randomness to renew deadline

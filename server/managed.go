@@ -20,18 +20,20 @@ type managedCert struct {
 	loadAt int64
 }
 
-func NewManagedCertManager(server *Server) *ManagedCertManager {
+func NewManagedCertManager(stor *StorageManager, ocspMgr *OCSPManager) *ManagedCertManager {
 	manager := &ManagedCertManager{
-		server: server,
-		log:    zlog.Named("managed").Sugar(),
+		stor:    stor,
+		ocspMgr: ocspMgr,
+		log:     zlog.Named("managed").Sugar(),
 	}
 	return manager
 }
 
 type ManagedCertManager struct {
-	cache  sync.Map
-	server *Server
-	log    *zap.SugaredLogger
+	cache   sync.Map
+	stor    *StorageManager
+	ocspMgr *OCSPManager
+	log     *zap.SugaredLogger
 }
 
 func (p *ManagedCertManager) Get(certKey string) (*tls.Certificate, error) {
@@ -40,8 +42,8 @@ func (p *ManagedCertManager) Get(certKey string) (*tls.Certificate, error) {
 		return nil, err
 	}
 
-	ocspKeyName := managedCertOCSPKeyName(certKey)
-	p.server.OCSPManager.Watch(ocspKeyName, func() (*tls.Certificate, error) {
+	ocspKeyName := p.OCSPKeyName(certKey)
+	p.ocspMgr.Watch(ocspKeyName, func() (*tls.Certificate, error) {
 		return p.getManagedCertificate(certKey)
 	})
 
@@ -71,7 +73,7 @@ func (p *ManagedCertManager) getManagedCertificate(certKey string) (*tls.Certifi
 	if mngCert.cert != nil {
 		return (*tls.Certificate)(mngCert.cert), nil
 	}
-	tlscert, _, _, err := p.server.LoadCertificateFromStore(certKey)
+	tlscert, _, _, err := p.stor.LoadCertificateFromStore(certKey)
 	if err != nil {
 		return nil, fmt.Errorf("managed: %v", err)
 	}
@@ -81,7 +83,7 @@ func (p *ManagedCertManager) getManagedCertificate(certKey string) (*tls.Certifi
 }
 
 func (p *ManagedCertManager) reloadManagedCertificate(mngCert *managedCert, certKey string) {
-	tlscert, _, _, err := p.server.LoadCertificateFromStore(certKey)
+	tlscert, _, _, err := p.stor.LoadCertificateFromStore(certKey)
 	if err != nil {
 		p.log.Warnf("failed reload certificate: certKey= %s err= %v", certKey, err)
 		return
@@ -92,6 +94,6 @@ func (p *ManagedCertManager) reloadManagedCertificate(mngCert *managedCert, cert
 	mngCert.loadAt = time.Now().Unix()
 }
 
-func managedCertOCSPKeyName(certKey string) string {
+func (p *ManagedCertManager) OCSPKeyName(certKey string) string {
 	return fmt.Sprintf("managed|%s", certKey)
 }
