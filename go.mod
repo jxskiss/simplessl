@@ -6,14 +6,13 @@ require (
 	github.com/cloudflare/tableflip v1.2.3
 	github.com/go-acme/lego/v4 v4.7.0
 	github.com/go-redis/redis/v8 v8.11.5
-	github.com/jxskiss/gopkg/v2 v2.0.0-alpha.5.0.20220611093926-2e251260ff75
+	github.com/jxskiss/gopkg/v2 v2.0.0-alpha.5.0.20220612062224-5de4d5857868
 	github.com/jxskiss/mcli v0.2.1
 	github.com/stretchr/testify v1.7.2
 	github.com/urfave/cli/v2 v2.3.0
 	go.uber.org/zap v1.21.0
 	golang.org/x/crypto v0.0.0-20220518034528-6f7dac969898
 	golang.org/x/net v0.0.0-20220517181318-183a9ca12b87
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -29,6 +28,7 @@ require (
 	github.com/Azure/go-autorest/autorest/validation v0.3.1 // indirect
 	github.com/Azure/go-autorest/logger v0.2.1 // indirect
 	github.com/Azure/go-autorest/tracing v0.6.0 // indirect
+	github.com/BurntSushi/toml v1.1.0 // indirect
 	github.com/OpenDNS/vegadns2client v0.0.0-20180418235048-a3fa4a771d87 // indirect
 	github.com/akamai/AkamaiOPEN-edgegrid-golang v1.1.1 // indirect
 	github.com/aliyun/alibaba-cloud-sdk-go v1.61.1183 // indirect
@@ -130,5 +130,6 @@ require (
 	gopkg.in/ns1/ns1-go.v2 v2.6.2 // indirect
 	gopkg.in/square/go-jose.v2 v2.6.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 	software.sslmate.com/src/go-pkcs12 v0.0.0-20210415151418-c5206de65a78 // indirect
 )
