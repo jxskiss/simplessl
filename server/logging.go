@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -10,9 +9,9 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
-)
 
-var accessLogger = log.New(os.Stdout, "", 0)
+	"go.uber.org/zap"
+)
 
 type loggingResponseWriter struct {
 	http.ResponseWriter
@@ -24,21 +23,18 @@ func (lrw *loggingResponseWriter) WriteHeader(code int) {
 	lrw.ResponseWriter.WriteHeader(code)
 }
 
-func loggingMiddleware(next http.Handler) http.Handler {
+func loggingMiddleware(accessLogger *zap.SugaredLogger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		lrw := &loggingResponseWriter{w, http.StatusOK}
 		defer func(start time.Time) {
-			// [yyyymmdd hhmmss Addr] Status Method URI Duration
-			const LogFormat = "[%s %s] %d %s %s %s\n"
-			now := time.Now().UTC()
-			logTime := now.Format("20060102 15:04:05")
-			accessLogger.Printf(LogFormat, logTime, req.RemoteAddr, lrw.statusCode, req.Method, req.RequestURI, now.Sub(start))
+			const LogFormat = "%d %s %s %s %s"
+			accessLogger.Infof(LogFormat, lrw.statusCode, req.Method, req.RequestURI, time.Since(start), req.RemoteAddr)
 		}(time.Now())
 		next.ServeHTTP(lrw, req)
 	})
 }
 
-func recoverMiddleware(next http.Handler) http.Handler {
+func recoverMiddleware(logger *zap.SugaredLogger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
@@ -59,7 +55,7 @@ func recoverMiddleware(next http.Handler) http.Handler {
 				}
 				loc := identifyPanic()
 				stack := debug.Stack()
-				log.Printf("[ERROR] catch panic: *** %s ***\n%s %s\n%s",
+				logger.DPanicf("catch panic: *** %s ***\n%s %s\n%s",
 					loc, req.Method, req.URL.RequestURI(), stack)
 				w.WriteHeader(500)
 			}
@@ -93,9 +89,4 @@ func identifyPanic() string {
 	}
 
 	return fmt.Sprintf("pc:%x", pc)
-}
-
-func FlushLogs() {
-	_ = os.Stdout.Sync()
-	_ = os.Stderr.Sync()
 }

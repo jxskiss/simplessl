@@ -2,54 +2,73 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/cloudflare/tableflip"
+	"github.com/jxskiss/gopkg/v2/zlog"
+	"github.com/jxskiss/mcli"
 
 	"github.com/jxskiss/ssl-cert-server/server"
 )
 
 const VERSION = "0.4.3"
 
-// StringArray implements flag.Value interface.
-type StringArray []string
-
-func (v *StringArray) Set(s string) error {
-	*v = append(*v, s)
-	return nil
-}
-
-func (v *StringArray) String() string {
-	return strings.Join(*v, ",")
-}
-
 func main() {
-	defer server.FlushLogs()
-	flag.Usage = PrintUsage
-	if len(os.Args) >= 2 && os.Args[1] == generateSelfSignedCertSubCommand {
-		cmdGenerateSelfSignedCertificate()
-		return
+	zlog.SetDevelopment()
+	defer zlog.Sync()
+
+	if len(os.Args) < 2 {
+		os.Args = append(os.Args, "run")
+	} else if strings.HasPrefix(os.Args[1], "-") &&
+		os.Args[1] != "-h" {
+		modifiedArgs := os.Args[:1:1]
+		modifiedArgs = append(modifiedArgs, "run")
+		modifiedArgs = append(modifiedArgs, os.Args[1:]...)
+		os.Args = modifiedArgs
 	}
-	server.InitFlags()
-	if server.Flags.ShowVersion {
-		fmt.Printf("ssl-cert-server v%s\n", VERSION)
-		return
+
+	mcli.AddHelp()
+	mcli.Add("run", cmdRunServer, "Run certificate server")
+	mcli.Add("generate-self-signed", cmdGenerateSelfSignedCertificate, "Generate self-signed certificate")
+	mcli.Add("version", cmdPrintVersion, "Print version information")
+	mcli.Run()
+}
+
+func cmdPrintVersion() {
+	gitRevision := "unknown"
+	buildInfo, ok := debug.ReadBuildInfo()
+	if ok {
+		for _, setting := range buildInfo.Settings {
+			if setting.Key == "vcs.revision" {
+				gitRevision = setting.Value
+				if len(gitRevision) > 12 {
+					gitRevision = gitRevision[:12]
+				}
+			}
+		}
 	}
+	fmt.Printf("ssl-cert-server v%s-%s\n", VERSION, gitRevision)
+}
+
+func cmdRunServer() {
+	var opts server.Opts
+	mcli.Parse(&opts)
+
 	Cfg := server.Cfg
 
-	server.InitConfig()
+	server.InitConfig(opts)
 	mux := http.NewServeMux()
-	manager := server.GetManager()
-	manager.BuildRoutes(mux)
+
+	svr := server.NewServer()
+	svr.AutocertMgr.BuildRoutes(mux)
 
 	// Graceful restarts.
 	upg, err := tableflip.New(tableflip.Options{
@@ -57,7 +76,7 @@ func main() {
 		PIDFile:        Cfg.PIDFile,
 	})
 	if err != nil {
-		log.Fatalf("[FATAL] server: failed init upgrader: %v", err)
+		zlog.Fatalf("server: failed init upgrader: %v", err)
 	}
 	defer upg.Stop()
 
@@ -68,7 +87,7 @@ func main() {
 		for range sig {
 			err := upg.Upgrade()
 			if err != nil {
-				log.Printf("[ERROR] server: filed do upgrade: err= %v", err)
+				zlog.Errorf("server: failed do upgrade: %v", err)
 			}
 		}
 	}()
@@ -76,28 +95,28 @@ func main() {
 	// Listen must be called before Ready
 	ln, err := upg.Listen("tcp", Cfg.Listen)
 	if err != nil {
-		log.Fatalf("[FATAL] server: fialed listen: %v", err)
+		zlog.Fatalf("server: failed listen: %v", err)
 	}
 	httpServer := http.Server{Handler: mux}
 	go func() {
-		log.Printf("[INFO] server: listening on http://%v", Cfg.Listen)
+		zlog.Infof("server: listening on http://%v", Cfg.Listen)
 		err := httpServer.Serve(ln)
 		if err != http.ErrServerClosed {
-			log.Fatalf("[FATAL] server: stopped unexpectedly: %v", err)
+			zlog.Fatalf("server: stopped unexpectedly: %v", err)
 		}
 	}()
 
 	if err := upg.Ready(); err != nil {
-		log.Fatalf("[FATAL] server: upgrader not ready: %v", err)
+		zlog.Fatalf("server: upgrader not ready: %v", err)
 	}
 
 	stop := make(chan os.Signal)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	select {
 	case <-upg.Exit():
-		log.Printf("[INFO] server: received exit signal from upgrader")
+		zlog.Infof("server: received exit signal from upgrader")
 	case <-stop:
-		log.Printf("[INFO] server: received stop signal from system")
+		zlog.Infof("server: received stop signal from system")
 	}
 
 	// Graceful shutdown the old process.
@@ -106,71 +125,39 @@ func main() {
 	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
 	err = httpServer.Shutdown(ctx)
 	if err == nil {
-		log.Printf("[INFO] server: shutdown gracefully")
+		zlog.Infof("server: shutdown gracefully")
 	} else {
-		log.Printf("[WARN] server: failed graceful shutdown: %v", err)
+		zlog.Warnf("server: failed graceful shutdown: %v", err)
 	}
-}
-
-func PrintUsage() {
-	fmt.Fprintf(flag.CommandLine.Output(), "To run certificate server:\n%s\n", os.Args[0])
-	flag.CommandLine.PrintDefaults()
-
-	fmt.Fprintf(flag.CommandLine.Output(), "\n")
-	fmt.Fprintf(flag.CommandLine.Output(), "To generate self-signed certificate:\n%s %s\n",
-		os.Args[0], generateSelfSignedCertSubCommand)
-	generateSelfSignedCertFlagSet.PrintDefaults()
-}
-
-/*
-Sub command to generate self-signed certificate.
-*/
-
-const generateSelfSignedCertSubCommand = "generate-self-signed"
-
-var generateSelfSignedCertFlagSet = flag.NewFlagSet(generateSelfSignedCertSubCommand, flag.ExitOnError)
-var generateSelfSignedCertOptions = struct {
-	validDays    int
-	out          string
-	certOut      string
-	keyOut       string
-	organization StringArray
-}{}
-
-func init() {
-	cmdFlags := generateSelfSignedCertFlagSet
-	cmdFlags.IntVar(&generateSelfSignedCertOptions.validDays,
-		"valid-days", 365, "number of days the cert is valid for")
-	cmdFlags.StringVar(&generateSelfSignedCertOptions.out,
-		"out", "./self_signed", "output single file contains both private key and certificate")
-	cmdFlags.StringVar(&generateSelfSignedCertOptions.certOut,
-		"cert-out", "./self_signed.cert", "output certificate file")
-	cmdFlags.StringVar(&generateSelfSignedCertOptions.keyOut,
-		"key-out", "./self_signed.key", "output private key file")
-	cmdFlags.Var(&generateSelfSignedCertOptions.organization,
-		"organization", "certificate organization (may be given multiple times)")
 }
 
 func cmdGenerateSelfSignedCertificate() {
-	generateSelfSignedCertFlagSet.Parse(os.Args[2:])
-	opts := generateSelfSignedCertOptions
-	if len(opts.organization) == 0 {
-		opts.organization = server.DefaultSelfSignedOrganization
+	var opts struct {
+		ValidDays     int      `cli:"--valid-days, number of days the cert is valid for" default:"365"`
+		Out           string   `cli:"--out, output single file contains both private key and certificate" default:"./self_signed"`
+		CertOut       string   `cli:"--cert-out, output certificate file" default:"./self_signed.cert"`
+		KeyOut        string   `cli:"--key-out, output private key file" default:"./self_signed.key"`
+		Organizations []string `cli:"--organization, certificate organization (may be given multiple times)"`
+	}
+	mcli.Parse(&opts)
+
+	if len(opts.Organizations) == 0 {
+		opts.Organizations = server.DefaultSelfSignedOrganization
 	}
 
-	certPEM, privKeyPEM, err := server.CreateSelfSignedCertificate(opts.validDays, opts.organization)
+	certPEM, privKeyPEM, err := server.CreateSelfSignedCertificate(opts.ValidDays, opts.Organizations)
 	if err != nil {
-		log.Fatalf("[FATAL] %v", err)
+		zlog.Fatalf("failed create self-signed certificate: %v", err)
 	}
-	err = ioutil.WriteFile(opts.keyOut, privKeyPEM, 0644)
+	err = ioutil.WriteFile(opts.KeyOut, privKeyPEM, 0644)
 	if err == nil {
-		err = ioutil.WriteFile(opts.certOut, certPEM, 0644)
+		err = ioutil.WriteFile(opts.CertOut, certPEM, 0644)
 	}
 	if err == nil {
 		outData := append(privKeyPEM, certPEM...)
-		err = ioutil.WriteFile(opts.out, outData, 0644)
+		err = ioutil.WriteFile(opts.Out, outData, 0644)
 	}
 	if err != nil {
-		log.Fatalf("[FATAL] self_signed: failed write certificate files: %v", err)
+		zlog.Fatalf("failed write self-signed certificate file: %v", err)
 	}
 }

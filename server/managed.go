@@ -3,16 +3,16 @@ package server
 import (
 	"crypto/tls"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/jxskiss/gopkg/v2/zlog"
+	"go.uber.org/zap"
 )
 
 const reloadInterval = 300 // seconds
-
-var managedCache sync.Map
 
 type managedCert struct {
 	sync.Mutex
@@ -29,36 +29,50 @@ func IsManagedDomain(domain string) (certKey string, ok bool) {
 	return "", false
 }
 
-func GetManagedCertificate(certKey string) (*tls.Certificate, error) {
-	tlscert, err := getManagedCertificate(certKey)
+func NewManagedCertManager(ocspMgr *OCSPManager) *ManagedCertManager {
+	manager := &ManagedCertManager{
+		ocspMgr: ocspMgr,
+		log:     zlog.Named("managed").Sugar(),
+	}
+	return manager
+}
+
+type ManagedCertManager struct {
+	cache   sync.Map
+	ocspMgr *OCSPManager
+	log     *zap.SugaredLogger
+}
+
+func (p *ManagedCertManager) Get(certKey string) (*tls.Certificate, error) {
+	tlscert, err := p.getManagedCertificate(certKey)
 	if err != nil {
 		return nil, err
 	}
 
 	ocspKeyName := managedCertOCSPKeyName(certKey)
-	OCSPManager.Watch(ocspKeyName, func() (*tls.Certificate, error) {
-		return getManagedCertificate(certKey)
+	p.ocspMgr.Watch(ocspKeyName, func() (*tls.Certificate, error) {
+		return p.getManagedCertificate(certKey)
 	})
 
 	return tlscert, nil
 }
 
-func getManagedCertificate(certKey string) (*tls.Certificate, error) {
-	cached, ok := managedCache.Load(certKey)
+func (p *ManagedCertManager) getManagedCertificate(certKey string) (*tls.Certificate, error) {
+	cached, ok := p.cache.Load(certKey)
 	if ok {
 		mngCert := cached.(*managedCert)
 		tlscert := atomic.LoadPointer(&mngCert.cert)
 		if tlscert != nil {
 			if mngCert.loadAt > 0 &&
 				time.Now().Unix()-mngCert.loadAt > reloadInterval {
-				go reloadManagedCertificate(mngCert, certKey)
+				go p.reloadManagedCertificate(mngCert, certKey)
 			}
 			return (*tls.Certificate)(tlscert), nil
 		}
 	}
 
 	// certificate not cached, lock and load from storage
-	cached, _ = managedCache.LoadOrStore(certKey, &managedCert{})
+	cached, _ = p.cache.LoadOrStore(certKey, &managedCert{})
 	mngCert := cached.(*managedCert)
 	mngCert.Lock()
 	defer mngCert.Unlock()
@@ -75,10 +89,10 @@ func getManagedCertificate(certKey string) (*tls.Certificate, error) {
 	return tlscert, nil
 }
 
-func reloadManagedCertificate(mngCert *managedCert, certKey string) {
+func (p *ManagedCertManager) reloadManagedCertificate(mngCert *managedCert, certKey string) {
 	tlscert, err := loadCertificateFromStore(certKey)
 	if err != nil {
-		log.Printf("[WARN] managed: failed reload certificate: cert_key= %s err= %v", certKey, err)
+		p.log.Warnf("failed reload certificate: certKey= %s err= %v", certKey, err)
 		return
 	}
 	mngCert.Lock()
