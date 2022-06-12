@@ -5,6 +5,7 @@ luacov*
 vendor/*
 !vendor/modules.txt
 output/
+temp/
 
 .idea/
 .vscode/

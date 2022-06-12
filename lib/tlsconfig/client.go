@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -285,7 +285,7 @@ func (c *Client) requestStapling(ctx context.Context, domainName string, fingerp
 		err = fmt.Errorf("bad http status %d", resp.StatusCode)
 		return
 	}
-	stapling, err = ioutil.ReadAll(resp.Body)
+	stapling, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return
 	}

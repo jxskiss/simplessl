@@ -2,15 +2,19 @@ package server
 
 import (
 	"context"
-	"io/ioutil"
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
 
+	"github.com/jxskiss/gopkg/v2/set"
 	"github.com/jxskiss/gopkg/v2/zlog"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/net/idna"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,6 +23,44 @@ var DefaultSelfSignedOrganization = []string{"SSL Cert Server Self-Signed"}
 type redisConfig struct {
 	Addr   string `yaml:"addr"`   // default: "127.0.0.1:6379"
 	Prefix string `yaml:"prefix"` // default: ""
+}
+
+type dnsCredential struct {
+	Name     string            `yaml:"name"`
+	Provider string            `yaml:"provider"`
+	Env      map[string]string `yaml:"env"`
+}
+
+type wildcardItem struct {
+	RootDomain string   `yaml:"root_domain"`
+	Credential string   `yaml:"credential"`
+	Domains    []string `yaml:"domains"`
+}
+
+func (p *wildcardItem) Match(name string) bool {
+	if !strings.HasSuffix(name, p.RootDomain) {
+		return false
+	}
+	for _, domain := range p.Domains {
+		if !strings.HasPrefix(domain, "*.") {
+			if domain == name {
+				return true
+			}
+			continue
+		}
+		// wildcard domain
+		leftmost := strings.TrimSuffix(name, domain[2:])
+		if !strings.HasSuffix(leftmost, ".") {
+			continue
+		}
+		leftmost = leftmost[:len(leftmost)-1]
+		if strings.ContainsRune(leftmost, '.') {
+			continue
+		}
+		_, err := idna.Lookup.ToASCII(leftmost)
+		return err == nil
+	}
+	return false
 }
 
 type config struct {
@@ -62,6 +104,15 @@ type config struct {
 		DirectoryURL string `yaml:"-"`
 	} `yaml:"lets_encrypt"`
 
+	Wildcard struct {
+		LegoDataPath   string           `yaml:"lego_data_path"`
+		DNSCredentials []*dnsCredential `yaml:"dns_credentials"`
+		Certificates   []*wildcardItem  `yaml:"certificates"`
+
+		credentialMap   map[string]*dnsCredential
+		certificateList []*wildcardItem
+	} `yaml:"wildcard"`
+
 	SelfSigned struct {
 		Enable       bool     `yaml:"enable"`       // default: false
 		CheckSNI     bool     `yaml:"check_sni"`    // default: false
@@ -72,24 +123,27 @@ type config struct {
 }
 
 func (p *config) setupDefaultOptions() {
-	setDefault(&Cfg.Listen, "127.0.0.1:8999")
-	setDefault(&Cfg.PIDFile, "ssl-cert-server.pid")
+	setDefault(&p.Listen, "127.0.0.1:8999")
+	setDefault(&p.PIDFile, "ssl-cert-server.pid")
 
-	setDefault(&Cfg.Storage.Type, "dir_cache")
-	setDefault(&Cfg.Storage.DirCache, "./secret-dir")
-	setDefault(&Cfg.Storage.Redis.Addr, "127.0.0.1:6379")
+	setDefault(&p.Storage.Type, StorageTypeDirCache)
+	setDefault(&p.Storage.DirCache, "./secret-dir")
+	setDefault(&p.Storage.Redis.Addr, "127.0.0.1:6379")
 
-	setDefault(&Cfg.LetsEncrypt.RenewBefore, 30)
-	if Cfg.LetsEncrypt.Staging {
-		Cfg.LetsEncrypt.DirectoryURL = stagingDirectoryURL
+	setDefault(&p.LetsEncrypt.RenewBefore, 30)
+	if p.LetsEncrypt.Staging {
+		p.LetsEncrypt.DirectoryURL = stagingDirectoryURL
 	} else {
-		Cfg.LetsEncrypt.DirectoryURL = acme.LetsEncryptURL
+		p.LetsEncrypt.DirectoryURL = acme.LetsEncryptURL
 	}
 
-	setDefault(&Cfg.SelfSigned.ValidDays, 365)
-	setDefault(&Cfg.SelfSigned.CertKey, "self_signed")
-	if len(Cfg.SelfSigned.Organization) == 0 {
-		Cfg.SelfSigned.Organization = DefaultSelfSignedOrganization
+	defaultLegoDataPath := filepath.Join(p.Storage.DirCache, ".lego")
+	setDefault(&p.Wildcard.LegoDataPath, defaultLegoDataPath)
+
+	setDefault(&p.SelfSigned.ValidDays, 365)
+	setDefault(&p.SelfSigned.CertKey, "self_signed")
+	if len(p.SelfSigned.Organization) == 0 {
+		p.SelfSigned.Organization = DefaultSelfSignedOrganization
 	}
 }
 
@@ -134,14 +188,52 @@ func (p *config) buildHostPolicy() {
 	}
 }
 
-type Opts struct {
-	ConfigFile string `cli:"--config, configuration filename" default:"./conf.yaml"`
+func (p *config) prepareWildcardConfig() error {
+	credentialMap := make(map[string]*dnsCredential, len(p.Wildcard.DNSCredentials))
+	for _, cred := range p.Wildcard.DNSCredentials {
+		if cred.Name == "" || cred.Provider == "" {
+			return fmt.Errorf("dns credential's name/provider cannot be empty")
+		}
+		if _, ok := credentialMap[cred.Name]; ok {
+			return fmt.Errorf("dns credential %s is duplicate", cred.Name)
+		}
+		credentialMap[cred.Name] = cred
+	}
+	p.Wildcard.credentialMap = credentialMap
+
+	certRootDomainSet := set.New[string]()
+	for _, cert := range p.Wildcard.Certificates {
+		if cert.RootDomain == "" {
+			return fmt.Errorf("certificate root domain cannot be empty")
+		}
+		if certRootDomainSet.Contains(cert.RootDomain) {
+			return fmt.Errorf("certificate root domain %s is duplicate", cert.RootDomain)
+		}
+		if credentialMap[cert.Credential] == nil {
+			return fmt.Errorf("dns credential %s is not configrured", cert.Credential)
+		}
+		if err := validateWildcardDomains(cert.Domains); err != nil {
+			return err
+		}
+		p.Wildcard.certificateList = append(p.Wildcard.certificateList, cert)
+	}
+
+	return nil
+}
+
+func (p *config) CheckWildcardDomain(name string) *wildcardItem {
+	for _, item := range p.Wildcard.certificateList {
+		if item.Match(name) {
+			return item
+		}
+	}
+	return nil
 }
 
 var Cfg = &config{}
 
 func InitConfig(opts Opts) {
-	confbuf, err := ioutil.ReadFile(opts.ConfigFile)
+	confbuf, err := os.ReadFile(opts.ConfigFile)
 	if err != nil && !os.IsNotExist(err) {
 		zlog.Fatalf("server: failed read configuration: %v", err)
 	}
@@ -156,6 +248,11 @@ func InitConfig(opts Opts) {
 
 	Cfg.setupDefaultOptions()
 	Cfg.buildHostPolicy()
+
+	err = Cfg.prepareWildcardConfig()
+	if err != nil {
+		zlog.Fatalf("server: failed prepare wildcard config: %v", err)
+	}
 
 	switch Cfg.Storage.Type {
 	case "dir_cache":
@@ -190,6 +287,21 @@ func checkHostIsValid(ctx context.Context, host string) (err error) {
 	}
 	if !strings.Contains(strings.Trim(host, "."), ".") {
 		return ErrHostNotPermitted
+	}
+	return nil
+}
+
+var wildcardDomainRE = regexp.MustCompile(`^(\*\.)?([\w-]+\.)+\w+$`)
+
+func validateWildcardDomains(domains []string) error {
+	if len(domains) == 0 {
+		return errors.New("must have at least one domain")
+	}
+	for _, domain := range domains {
+		isValid := wildcardDomainRE.MatchString(domain)
+		if !isValid {
+			return fmt.Errorf("domain name %q is invalid", domain)
+		}
 	}
 	return nil
 }
