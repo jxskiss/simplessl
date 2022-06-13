@@ -12,22 +12,23 @@ The Openresty plugin uses the `ssl_certificate_by_lua` functionality in OpenRest
 By using ssl-cert-server to register SSL certificates with Let's Encrypt,
 you agree to the [Let's Encrypt Subscriber Agreement](https://letsencrypt.org/repository/).
 
-Disclaimer: I got inspires and stole some code from the awesome
+Disclaimer: I got initial inspires and stole some code from the awesome
 project [lua-resty-auto-ssl](https://github.com/GUI/lua-resty-auto-ssl) and Go's autocert package.
-Also this program uses [Lego](https://github.com/go-acme/lego) to resolve dns-01 challenge.
+Also, this program uses [Lego](https://github.com/go-acme/lego) to solve dns-01 challenge.
 Many thanks 😀
 
 ## Features
 
-1. High performance, very low latency added to user requests.
-2. Issue and renew certificate for each domain using http-01 challenge, support Openresty and Golang.
-3. Issue and renew certificate for each domain using tls-alpn-01 challenge, support Golang.
-4. Issue and renew **wildcard certificate**, using dns-01 challenge, support Openresty and Golang.
-5. Serve manually-managed certificates.
-6. Serve OCSP stapling, with cache and asynchronous renewal, the latency is negligible.
-7. Generate and serve self-signed certificate.
-8. Graceful restart like Nginx without losing any requests.
-9. Support directory and Redis as cache storage, adding new storage support is easy.
+1. Minimal dependency, easy deployment, friendly to distributed environment.
+2. High performance, very low latency added to user requests.
+3. Issue and renew certificate for each domain using http-01 challenge, support Openresty and Golang.
+4. Issue and renew certificate for each domain using tls-alpn-01 challenge, support Golang.
+5. Issue and renew **wildcard certificate**, using dns-01 challenge, support Openresty and Golang.
+6. Serve manually-managed certificates.
+7. Serve OCSP stapling, with cache and asynchronous renewal, the latency is negligible.
+8. Generate and serve self-signed certificate.
+9. Graceful restart like Nginx without losing any requests.
+10. Support directory and Redis as cache storage, adding new storage support is easy.
 
 **NOTE: currently this program is designed to be used inside intranet,
 security features are not seriously considered, be sure to PROTECT your certificate server
@@ -229,8 +230,8 @@ func main() {
 ### v0.5.0 @ 2022-06-12
 
 - fix: incorrect behavior when querying OCSP stapling before query certificate
-- new: support wildcard certificates, using Lego to resolve dns-p1 challenge
-- change: make `lib/config` be standalone module
+- new: support wildcard certificates, using Lego to solve dns-01 challenge
+- change: make `lib/tlsconfig` be standalone module
 - change: upgrade dependency to latest
 - change: refactor code to use more sophisticated cli and logging libraries
 - change: refactor code for better maintainability
