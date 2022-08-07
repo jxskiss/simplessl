@@ -2,6 +2,7 @@ package tlsconfig
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"sync"
 
@@ -37,12 +38,26 @@ type Options struct {
 	PreloadAsync   bool
 
 	// DisableStapling optionally disables OCSP stapling.
+	//
+	// Deprecated: this option has been renamed to DisableOCSPStapling.
 	DisableStapling bool
+
+	// DisableOCSPStapling optionally disables OCSP stapling.
+	DisableOCSPStapling bool
 
 	// ErrorLog specifies an optional function to log error messages.
 	// If nil, error messages will be logged using the default logger from
 	// "log" package.
 	ErrorLog func(format string, args ...interface{})
+}
+
+func (opts *Options) fillDefaults() {
+	if opts.ErrorLog == nil {
+		opts.ErrorLog = log.Printf
+	}
+	if opts.DisableStapling {
+		opts.DisableOCSPStapling = opts.DisableStapling
+	}
 }
 
 func (opts Options) makeHostPolicy() func(string) error {

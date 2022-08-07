@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -47,9 +46,7 @@ type Client struct {
 }
 
 func NewClient(sslCertServerHost string, opts Options) *Client {
-	if opts.ErrorLog == nil {
-		opts.ErrorLog = log.Printf
-	}
+	opts.fillDefaults()
 	if !strings.HasPrefix(sslCertServerHost, "http://") {
 		sslCertServerHost = "http://" + sslCertServerHost
 	}
@@ -160,7 +157,7 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 	// If OCSP is enabled, get it.
 	// And since OCSP stapling is optional, we don't fail the server request
 	// in case of OCSP stapling unavailable.
-	if !c.opts.DisableStapling && cacheCert.HasOcspStapling {
+	if !c.opts.DisableOCSPStapling && cacheCert.HasOcspStapling {
 		stapling, staplingExpire, staplingRefresh, err := c.requestStapling(ctx, domainName, cacheCert.Fp)
 		if err != nil {
 			c.opts.ErrorLog("[WARN] tlsconfig: failed request OCSP stapling: domain= %s err= %v", domainName, err)
@@ -212,7 +209,12 @@ func (c *Client) eagerPullOCSPStapling(domainName string) {
 	}
 }
 
-func (c *Client) RequestCertificate(ctx context.Context, req *proto.GetCertificateRequest) (resp *proto.GetCertificateResponse, err error) {
+type (
+	GetCertificateRequest  = proto.GetCertificateRequest
+	GetCertificateResponse = proto.GetCertificateResponse
+)
+
+func (c *Client) RequestCertificate(ctx context.Context, req *GetCertificateRequest) (resp *GetCertificateResponse, err error) {
 	apiURL := c.serverHost + "/sslcertserver.CertServer/GetCertificate"
 	data, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(data))
@@ -387,7 +389,7 @@ func (c *Client) refreshDomainCertificate(domainName string, cacheCert *cacheCer
 		}
 	}
 
-	if !c.opts.DisableStapling && newCacheCert.HasOcspStapling &&
+	if !c.opts.DisableOCSPStapling && newCacheCert.HasOcspStapling &&
 		newCacheCert.staplingRefresh <= now {
 		newStapling, expireAt, refreshAt, err := c.requestStapling(ctx, domainName, newCacheCert.Fp)
 		if err != nil {
