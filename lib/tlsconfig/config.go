@@ -4,17 +4,16 @@ import (
 	"crypto/tls"
 
 	"github.com/klauspost/cpuid"
-	"golang.org/x/crypto/acme"
 )
 
 func NewConfig(sslCertServerHost string, opts Options) *tls.Config {
 	client := NewClient(sslCertServerHost, opts)
 	config := &tls.Config{
-		GetCertificate: client.GetCertificate,
+		GetCertificate: client.GetTLSCertificate,
 
 		NextProtos: []string{
 			"h2", "http/1.1", // enable HTTP/2
-			acme.ALPNProto, // enable tls-alpn challenges
+			ALPNProto, // enable tls-alpn challenges
 		},
 
 		// the rest recommended for modern TLS servers

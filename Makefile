@@ -1,10 +1,16 @@
 VERSION := $(shell sed -n -e 's/^const VERSION = "\(.*\)"/\1/p' main.go)
 
+gen_proto:
+	cd pkg/pb && \
+	protoc --go_out=. --go_opt=paths=source_relative \
+		--go-drpc_out=. --go-drpc_opt=paths=source_relative \
+		api.proto
+
 build:
 	go build -o output/ssl-cert-server
 
 tlsconfig_example:
-	go build -o output/tlsconfig-example ./lib/tlsconfig/example
+	cd lib/tlsconfig && go build -o ../../output/tlsconfig-example ./example
 
 release:
 	for os in darwin linux windows; do \

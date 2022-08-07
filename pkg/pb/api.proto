@@ -1,0 +1,58 @@
+syntax = "proto3";
+option go_package = "github.com/jxskiss/ssl-cert-server/pkg/pb";
+
+package sslcertserver;
+
+message Certificate {
+    enum Type {
+        UNKNOWN = 0;
+        ALPN = 1;
+        SELF_SIGNED = 2;
+        MANAGED = 3;
+
+        ACME_ON_DEMAND = 11;
+        ACME_NAMED = 12;
+    }
+
+    int32 type = 1;
+    string pub_key = 2;
+    string priv_key = 3;
+    string fp = 4;
+    int64 not_before_sec = 5;
+    int64 not_after_sec = 6;
+    int64 ttl_sec = 7;
+    bool has_ocsp_stapling = 8;
+}
+
+message OCSPStapling {
+    bytes raw = 1;
+    int64 next_update_sec = 2;
+    int64 ttl_sec = 3;
+}
+
+message GetCertificateRequest {
+    string domain = 1;
+    string name = 2;
+
+    bool is_alpn = 11;
+    bool want_ocsp_stapling = 12;
+}
+
+message GetCertificateResponse {
+    Certificate cert = 1;
+    OCSPStapling ocsp_stapling = 3;
+}
+
+message GetOCSPStaplingRequest {
+    string domain = 1;
+    string fingerprint = 2;
+}
+
+message GetOCSPStaplingResponse {
+    OCSPStapling ocsp_stapling = 1;
+}
+
+service CertServer {
+    rpc GetCertificate(GetCertificateRequest) returns (GetCertificateResponse);
+    rpc GetOCSPStapling(GetOCSPStaplingRequest) returns (GetOCSPStaplingResponse);
+}

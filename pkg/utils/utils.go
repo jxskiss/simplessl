@@ -15,7 +15,23 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jxskiss/gopkg/v2/perf/fastrand"
 )
+
+func ToPEMBlock(data interface{}) *pem.Block {
+	var pemBlock *pem.Block
+	switch key := data.(type) {
+	case *ecdsa.PrivateKey:
+		keyBytes, _ := x509.MarshalECPrivateKey(key)
+		pemBlock = &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}
+	case *rsa.PrivateKey:
+		pemBlock = &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}
+	case *x509.CertificateRequest:
+		pemBlock = &pem.Block{Type: "CERTIFICATE REQUEST", Bytes: key.Raw}
+	}
+	return pemBlock
+}
 
 func EncodeRSAKey(w io.Writer, key *rsa.PrivateKey) error {
 	b := x509.MarshalPKCS1PrivateKey(key)
@@ -89,4 +105,26 @@ func CreateNonExistingFolder(path string, perm os.FileMode) error {
 		return err
 	}
 	return nil
+}
+
+func LimitTTL(ttl time.Duration) int64 {
+	if ttl < 10*time.Second {
+		ttl = 10 * time.Second
+	}
+
+	var result int64 = 3600
+	if ttl < time.Hour {
+		result = int64(ttl.Seconds() * 0.8)
+	}
+
+	// Add a little randomness to the TTL
+	var jitter int64 = 60
+	if result <= 2*jitter {
+		jitter = result / 2
+	}
+	n := fastrand.Int63n(jitter)
+	if n < result {
+		result -= n
+	}
+	return result
 }

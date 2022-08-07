@@ -2,11 +2,9 @@ package server
 
 import (
 	"context"
-	"crypto/tls"
-
-	"golang.org/x/crypto/acme/autocert"
-
-	"github.com/jxskiss/ssl-cert-server/pkg/utils"
+	"errors"
+	"os"
+	"path/filepath"
 )
 
 const (
@@ -14,38 +12,107 @@ const (
 	StorageTypeRedis    = "redis"
 )
 
-func NewDirCache(cacheDir string) (autocert.Cache, error) {
-	return autocert.DirCache(cacheDir), nil
+var ErrCacheMiss = errors.New("cache miss")
+
+type Storage interface {
+	Get(ctx context.Context, key string) (data []byte, err error)
+	Put(ctx context.Context, key string, data []byte) error
+	Delete(ctx context.Context, key string) error
 }
 
-func NewStorageManager(cfg *Config) *StorageManager {
-	return &StorageManager{
-		cfg: cfg,
+func NewDirCache(dir string) Storage {
+	return &dirCacheImpl{dir: dir}
+}
+
+type dirCacheImpl struct {
+	dir string
+}
+
+func (p *dirCacheImpl) Get(ctx context.Context, key string) (data []byte, err error) {
+	name := filepath.Join(p.dir, key)
+	done := make(chan struct{})
+	go func() {
+		data, err = os.ReadFile(name)
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-done:
 	}
-}
-
-type StorageManager struct {
-	cfg *Config
-}
-
-// LoadCertificateFromStore loads certificate from storage, if the certificate
-// exists and is valid, it will be returned, or an error otherwise.
-func (p *StorageManager) LoadCertificateFromStore(certKey string) (tlscert *tls.Certificate, keyPEM, certPEM []byte, err error) {
-	ctx := context.Background()
-	data, err := p.cfg.Storage.Cache.Get(ctx, certKey)
-	if err != nil {
-		return nil, nil, nil, err
+	if os.IsNotExist(err) {
+		return nil, ErrCacheMiss
 	}
-	return utils.ParseCertificate(data)
+	return data, err
 }
 
-// SaveCertificateToStore saves certificate to storage.
-func (p *StorageManager) SaveCertificateToStore(certKey string, privPEM, pubPEM []byte) error {
-	ctx := context.Background()
-	certBytes := utils.ConcatPrivAndPubKey(privPEM, pubPEM)
-	err := p.cfg.Storage.Cache.Put(ctx, certKey, certBytes)
-	if err != nil {
+func (p *dirCacheImpl) Put(ctx context.Context, key string, data []byte) error {
+	if err := os.MkdirAll(p.dir, 0700); err != nil {
+		return err
+	}
+
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var tmp string
+		if tmp, err = p.writeTempFile(key, data); err != nil {
+			return
+		}
+		defer os.Remove(tmp)
+		select {
+		case <-ctx.Done():
+			// Don't overwrite the file if the context was canceled.
+		default:
+			newName := filepath.Join(p.dir, key)
+			err = os.Rename(tmp, newName)
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+	}
+	return err
+}
+
+func (p *dirCacheImpl) Delete(ctx context.Context, key string) (err error) {
+	name := filepath.Join(p.dir, key)
+	done := make(chan struct{})
+	go func() {
+		err = os.Remove(name)
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+	}
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
+}
+
+func (p *dirCacheImpl) writeTempFile(prefix string, data []byte) (name string, reterr error) {
+	tmpDir := filepath.Join(p.dir, ".temp")
+	if err := os.MkdirAll(tmpDir, 0700); err != nil {
+		return "", err
+	}
+
+	// Temp file uses 0600 permissions.
+	f, err := os.CreateTemp(tmpDir, prefix)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if reterr != nil {
+			os.Remove(f.Name())
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return "", err
+	}
+	return f.Name(), f.Close()
 }
