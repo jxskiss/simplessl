@@ -6,14 +6,14 @@ require (
 	github.com/cloudflare/tableflip v1.2.3
 	github.com/go-acme/lego/v4 v4.8.0
 	github.com/go-redis/redis/v8 v8.11.5
-	github.com/jxskiss/gopkg/v2 v2.0.0-beta.4
+	github.com/jxskiss/gopkg/v2 v2.0.0-beta.5
 	github.com/jxskiss/mcli v0.2.1
-	github.com/mholt/acmez v1.0.3
-	go.uber.org/atomic v1.9.0
-	go.uber.org/zap v1.21.0
+	github.com/mholt/acmez v1.0.4
+	go.uber.org/atomic v1.10.0
+	go.uber.org/zap v1.22.0
 	golang.org/x/crypto v0.0.0-20220518034528-6f7dac969898
 	golang.org/x/exp v0.0.0-20220722155223-a9213eeb770e
-	golang.org/x/net v0.0.0-20220630215102-69896b714898
+	golang.org/x/net v0.0.0-20220812174116-3211cb980234
 	google.golang.org/protobuf v1.27.1
 	storj.io/drpc v0.0.32
 )
@@ -116,7 +116,7 @@ require (
 	go.uber.org/ratelimit v0.0.0-20180316092928-c15da0234277 // indirect
 	golang.org/x/mod v0.6.0-dev.0.20220106191415-9b9b3d81d5e3 // indirect
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d // indirect
-	golang.org/x/sys v0.0.0-20220615213510-4f61da869c0c // indirect
+	golang.org/x/sys v0.0.0-20220728004956-3c1f35247d10 // indirect
 	golang.org/x/text v0.3.7 // indirect
 	golang.org/x/time v0.0.0-20210611083556-38a9dc6acbc6 // indirect
 	golang.org/x/tools v0.1.10 // indirect

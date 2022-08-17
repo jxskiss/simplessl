@@ -86,8 +86,8 @@ func (p *acmeImpl) issueCertificate(ctx context.Context, certName string, domain
 	if err != nil {
 		return nil, err
 	}
-	if len(respCerts) != 1 {
-		return nil, fmt.Errorf("unexpected acme response")
+	if len(respCerts) == 0 || len(respCerts[0].ChainPEM) == 0 {
+		return nil, fmt.Errorf("certificate chain is empty")
 	}
 
 	acmeCert := &acmeRespCertificate{

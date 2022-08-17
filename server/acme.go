@@ -316,6 +316,9 @@ func (p *acmeImpl) doRenew() {
 	var wg sync.WaitGroup
 	var token = make(chan struct{}, 10)
 
+	var successCnt atomic.Int32
+	var failedCnt atomic.Int32
+
 	var checkAndDoRenew = func(acmeCert *acmeCert) bool {
 		cert := (*tls.Certificate)(acmeCert.cert.Load())
 		if cert == nil {
@@ -326,7 +329,7 @@ func (p *acmeImpl) doRenew() {
 		if time.Until(cert.Leaf.NotAfter) > renewDur {
 			return true
 		}
-		if !acmeCert.renewing.CAS(false, true) {
+		if !acmeCert.renewing.CompareAndSwap(false, true) {
 			return true
 		}
 
@@ -336,9 +339,14 @@ func (p *acmeImpl) doRenew() {
 			defer func() {
 				wg.Done()
 				<-token
-				acmeCert.renewing.Store(true)
+				acmeCert.renewing.Store(false)
 			}()
-			p.renewCertificate(acmeCert)
+			success := p.renewCertificate(acmeCert)
+			if success {
+				successCnt.Inc()
+			} else {
+				failedCnt.Inc()
+			}
 		}()
 		return true
 	}
@@ -354,10 +362,11 @@ func (p *acmeImpl) doRenew() {
 	})
 
 	wg.Wait()
-	p.log.Infof("success check and do certificate renewal")
+	p.log.Infof("success check and do certificate renewal, success= %v, failed= %v",
+		successCnt.Load(), failedCnt.Load())
 }
 
-func (p *acmeImpl) renewCertificate(acmeCert *acmeCert) {
+func (p *acmeImpl) renewCertificate(acmeCert *acmeCert) (success bool) {
 	p.log.Infof("renewing certificate: type= %v, name= %v", acmeCert.typ, acmeCert.name)
 
 	ctx := context.Background()
@@ -373,7 +382,7 @@ func (p *acmeImpl) renewCertificate(acmeCert *acmeCert) {
 		cfgCert := p.cfg.GetNamedACMECertificate(acmeCert.name)
 		if cfgCert == nil {
 			p.log.Warnf("certificate not configured: %v", acmeCert.name)
-			return
+			return false
 		}
 		certName = acmeCert.name
 		domains = cfgCert.Domains
@@ -383,13 +392,13 @@ func (p *acmeImpl) renewCertificate(acmeCert *acmeCert) {
 	if err != nil {
 		p.log.Errorf("failed renew certificate, certName= %v, domains= %v, err= %v",
 			certName, domains, err)
-		return
+		return false
 	}
 	cert, err := p.saveACMECertificate(ctx, acmeCert, acmeRespCert)
 	if err != nil {
 		p.log.Errorf("failed save new certificate, certName= %v, domains= %v, err= %v",
 			certName, domains, err)
-		return
+		return false
 	}
 	acmeCert.cert.Store(unsafe.Pointer(cert))
 
@@ -406,4 +415,5 @@ func (p *acmeImpl) renewCertificate(acmeCert *acmeCert) {
 		}
 		panic("bug: unexpected certificate type")
 	})
+	return true
 }
