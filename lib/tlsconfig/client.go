@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -127,7 +129,7 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 	cacheCert := c.getCachedCert(cacheKey)
 	if cacheCert != nil {
 		now := time.Now().Unix()
-		// in case the cached OCSP stapling is going to expire, abandon it
+		// In case the cached OCSP stapling is going to be expired, abandon it.
 		if cacheCert.staplingExpire > 0 && cacheCert.staplingExpire <= now-60 {
 			copyCert := *cacheCert.cert
 			copyCert.OCSPStaple = nil
@@ -145,7 +147,7 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 		return cacheCert.cert, nil
 	}
 
-	// first request for a new domain, give it a long time
+	// This is the first request for a new domain, give it a long time.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -166,7 +168,8 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 			cacheCert.staplingExpire = staplingExpire
 			cacheCert.staplingRefresh = staplingRefresh
 		}
-		// ensure OCSP stapling loaded as soon as possible
+
+		// Ensure the OCSP stapling been loaded as soon as possible.
 		if len(cacheCert.cert.OCSPStaple) == 0 {
 			go c.eagerPullOCSPStapling(domainName)
 		}
@@ -241,20 +244,58 @@ func (c *Client) RequestCertificate(ctx context.Context, req *GetCertificateRequ
 	return resp, nil
 }
 
+type v1CertResponse struct {
+	Type        int    `json:"type"`
+	Cert        string `json:"cert"`
+	PKey        string `json:"pkey"`
+	Fingerprint string `json:"fingerprint"`
+	ExpireAt    int64  `json:"expire_at"` // seconds since epoch
+	TTL         int64  `json:"ttl"`       // in seconds
+}
+
+func (v1 *v1CertResponse) toV2Certificate(tlsCert *tls.Certificate) *proto.Certificate {
+	v2Cert := &proto.Certificate{
+		Type:            proto.ToV2CertificateType(v1.Type),
+		PubKey:          v1.Cert,
+		PrivKey:         v1.PKey,
+		Fp:              v1.Fingerprint,
+		NotBeforeSec:    0, // not used for now
+		NotAfterSec:     v1.ExpireAt,
+		TtlSec:          v1.TTL,
+		HasOcspStapling: false,
+	}
+	v2Cert.HasOcspStapling = proto.V1HasOCSPStapling(v1.Type, tlsCert)
+	return v2Cert
+}
+
 func (c *Client) requestCertificate(ctx context.Context, domainName string, isALPN01 bool) (
 	cacheCert *cacheCertificate, err error,
 ) {
-	req := &proto.GetCertificateRequest{
-		Domain:           domainName,
-		IsAlpn:           isALPN01,
-		WantOcspStapling: false,
-	}
-	resp, err := c.RequestCertificate(ctx, req)
-	if err != nil {
-		return nil, err
-	}
+	var response v1CertResponse
 
-	cert, err := tls.X509KeyPair([]byte(resp.Cert.PubKey), []byte(resp.Cert.PrivKey))
+	apiPath := c.serverHost + "/cert/" + domainName
+	if isALPN01 {
+		apiPath += "?alpn=1"
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", apiPath, nil)
+	if err != nil {
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		err = fmt.Errorf("bad http status %d", resp.StatusCode)
+		return
+	}
+	err = json.NewDecoder(resp.Body).Decode(&response)
+	if err != nil {
+		return
+	}
+	cert, err := tls.X509KeyPair([]byte(response.Cert), []byte(response.PKey))
 	if err != nil {
 		return
 	}
@@ -264,11 +305,12 @@ func (c *Client) requestCertificate(ctx context.Context, domainName string, isAL
 	}
 	cert.Leaf = leaf
 
+	v2Cert := response.toV2Certificate(&cert)
 	cacheCert = &cacheCertificate{
-		Certificate: resp.Cert,
+		Certificate: v2Cert,
 		cert:        &cert,
-		certExpire:  resp.Cert.NotAfterSec,
-		certRefresh: time.Now().Unix() + resp.Cert.TtlSec,
+		certExpire:  response.ExpireAt,
+		certRefresh: time.Now().Unix() + response.TTL,
 	}
 	return
 }
@@ -276,42 +318,32 @@ func (c *Client) requestCertificate(ctx context.Context, domainName string, isAL
 func (c *Client) requestStapling(ctx context.Context, domainName string, fingerprint string) (
 	stapling []byte, expireAt, refreshAt int64, err error,
 ) {
-	apiURL := c.serverHost
-	data, _ := json.Marshal(&proto.GetOCSPStaplingRequest{
-		Domain:      domainName,
-		Fingerprint: fingerprint,
-	})
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(data))
+	apiPath := c.serverHost + "/ocsp/" + domainName + "?fp=" + fingerprint
+	req, err := http.NewRequestWithContext(ctx, "GET", apiPath, nil)
 	if err != nil {
 		return
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpResp, err := http.DefaultClient.Do(httpReq)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return
 	}
-	defer httpResp.Body.Close()
+	defer resp.Body.Close()
 
-	if httpResp.StatusCode != 200 {
-		err = proto.DecodeError(httpResp.StatusCode, httpResp.Body)
-		if errCode, ok := err.(*proto.ErrorCode); ok {
-			if errCode.Code == proto.CodeNoContent {
-				return nil, 0, 0, nil
-			}
-		}
+	if resp.StatusCode == 204 {
 		return
 	}
-	protoResp := &proto.GetOCSPStaplingResponse{}
-	err = json.NewDecoder(httpResp.Body).Decode(protoResp)
+	if resp.StatusCode != 200 {
+		err = fmt.Errorf("bad http status %d", resp.StatusCode)
+		return
+	}
+	stapling, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return
 	}
-	ocspStapling := protoResp.OcspStapling
-	if ocspStapling != nil {
-		stapling = ocspStapling.Raw
-		expireAt = ocspStapling.NextUpdateSec
-		refreshAt = time.Now().Unix() + ocspStapling.TtlSec
-	}
+	now := time.Now().Unix()
+	expireAt, _ = strconv.ParseInt(resp.Header.Get("X-Expire-At"), 10, 64)
+	ttl, _ := strconv.ParseInt(resp.Header.Get("X-TTL"), 10, 64)
+	refreshAt = now + ttl
 	return
 }
 
