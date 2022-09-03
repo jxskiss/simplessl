@@ -16,7 +16,6 @@ import (
 	"github.com/jxskiss/gopkg/v2/zlog"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ocsp"
-	"storj.io/drpc/drpcerr"
 
 	"github.com/jxskiss/ssl-cert-server/pkg/pb"
 	"github.com/jxskiss/ssl-cert-server/pkg/utils"
@@ -95,18 +94,7 @@ func (p *ocspManagerImpl) GetOCSPStapling(ctx context.Context, key string, fp st
 		}
 	}
 
-	if err != nil {
-		switch err {
-		case ErrOCSPStaplingNotCached:
-			p.log.With(zap.String("key", key)).Info("OCSP stapling is not cached")
-			err = drpcerr.WithCode(err, CodeNoContent)
-		default:
-			p.log.With(zap.String("key", key), zap.Error(err)).
-				Error("failed get OCSP stapling")
-			err = drpcerr.WithCode(err, CodeInternalError)
-		}
-	}
-	return der, nextUpdate, err
+	return
 }
 
 func (p *ocspManagerImpl) isCertificateCached(key string) bool {

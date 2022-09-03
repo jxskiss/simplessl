@@ -1,7 +1,6 @@
 package server
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -23,26 +22,26 @@ const (
 )
 
 func NewMux(server *Server) (*Mux, error) {
-	httpAPI := NewHttpAPI(server)
+	httpAPI := NewV1API(server)
 	drpcM := drpcmux.New()
 	err := pb.DRPCRegisterCertServer(drpcM, server)
 	if err != nil {
 		return nil, err
 	}
 	mux := &Mux{
-		httpAPI:     httpAPI,
+		v1API:       httpAPI,
 		drpcHandler: drpchttp.New(drpcM),
 	}
 	return mux, nil
 }
 
 type Mux struct {
-	httpAPI     HttpAPI
+	v1API       V1API
 	drpcHandler http.Handler
 }
 
 func (m *Mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if handleFunc := m.httpAPI.GetHandler(r); handleFunc != nil {
+	if handleFunc := m.v1API.GetHandler(r); handleFunc != nil {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -53,31 +52,31 @@ func (m *Mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type HttpAPI interface {
+type V1API interface {
 	GetHandler(r *http.Request) http.HandlerFunc
 }
 
-func NewHttpAPI(server *Server) HttpAPI {
-	return &httpApiImpl{
+func NewV1API(server *Server) V1API {
+	return &v1APIImpl{
 		server: server,
-		log:    zlog.Named("httpAPI").Sugar(),
+		log:    zlog.Named("v1api").Sugar(),
 	}
 }
 
-type httpApiImpl struct {
+type v1APIImpl struct {
 	server     *Server
 	httpSolver HTTPAndTLSALPNSolver
 
 	log *zap.SugaredLogger
 }
 
-func (p *httpApiImpl) GetHandler(r *http.Request) http.HandlerFunc {
+func (p *v1APIImpl) GetHandler(r *http.Request) http.HandlerFunc {
 	path := r.URL.Path
 	if strings.HasPrefix(path, v1CertificatePath) {
-		return p.v1HandleCertificate
+		return p.HandleCertificate
 	}
 	if strings.HasPrefix(path, v1OCSPStaplingPath) {
-		return p.v1HandleOCSPStapling
+		return p.HandleOCSPStapling
 	}
 	if strings.HasPrefix(path, acmeChallengePath) {
 		return p.handleACMEChallenge
@@ -86,18 +85,18 @@ func (p *httpApiImpl) GetHandler(r *http.Request) http.HandlerFunc {
 }
 
 // HandleACMEChallenge handles requests of ACME challenges.
-func (p *httpApiImpl) handleACMEChallenge(w http.ResponseWriter, r *http.Request) {
+func (p *v1APIImpl) handleACMEChallenge(w http.ResponseWriter, r *http.Request) {
 	p.httpSolver.HandleACMEChallenge(w, r)
 }
 
-// v1HandleCertificate handles legacy requests of SSL certificate.
+// HandleCertificate handles legacy requests of SSL certificate.
 //
 // Possible responses are:
 // - 200 with the certificate data as response
 // - 400 the requested domain name is invalid or not permitted
 // - 500 which indicates the server failed to process the request,
 //       in such case, the body will be filled with the error message
-func (p *httpApiImpl) v1HandleCertificate(w http.ResponseWriter, r *http.Request) {
+func (p *v1APIImpl) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	domain := strings.TrimPrefix(r.URL.Path, "/cert/")
 	isALPN01 := r.URL.Query().Get("alpn") == "1"
@@ -108,15 +107,12 @@ func (p *httpApiImpl) v1HandleCertificate(w http.ResponseWriter, r *http.Request
 	}
 	resp, err := p.server.GetCertificate(ctx, req)
 	if err != nil {
-		switch err {
-		case ErrInvalidDomainName,
-			ErrHostNotPermitted,
-			ErrUnknownCertificateType:
-			p.log.Infof("bad request: domain= %v, err= %v", domain, err)
+		code := drpcerr.Code(err)
+		switch {
+		case code == CodeBadRequest:
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte(err.Error()))
 		default:
-			p.log.Errorf("failed get certificate: domain= %s err= %v", domain, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(err.Error()))
 		}
@@ -136,14 +132,14 @@ func (p *httpApiImpl) v1HandleCertificate(w http.ResponseWriter, r *http.Request
 	v1Resp.write(w)
 }
 
-// v1HandleOCSPStapling handles legacy requests of OCSP stapling.
+// HandleOCSPStapling handles legacy requests of OCSP stapling.
 //
 // Possible responses are:
 // - 200 with the OCSP response as body
 // - 204 without body, which indicates OCSP stapling for the requested domain
 //       is not available, temporarily or permanently
 // - 400 which indicates the requested domain name is invalid or not permitted
-func (p *httpApiImpl) v1HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
+func (p *v1APIImpl) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/ocsp/")
 	fingerprint := r.URL.Query().Get("fp")
 
@@ -156,21 +152,12 @@ func (p *httpApiImpl) v1HandleOCSPStapling(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		code := drpcerr.Code(err)
 		switch {
-		case code == CodeBadRequest ||
-			errors.Is(err, ErrInvalidDomainName) ||
-			errors.Is(err, ErrHostNotPermitted) ||
-			errors.Is(err, ErrUnknownCertificateType):
-			p.log.Infof("bad request: domain= %v, err= %v", domain, err)
+		case code == CodeBadRequest:
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte(err.Error()))
-		case code == CodeNoContent ||
-			errors.Is(err, ErrOCSPStaplingNotCached):
-			p.log.Infof("OCSP stapling not available: domain= %v, err= %v", domain, err)
+		default:
 			w.WriteHeader(http.StatusNoContent)
 			w.Write([]byte(err.Error()))
-		default:
-			p.log.Errorf("failed get OCSP stapling: domain= %v, err= %v", domain, err)
-			w.WriteHeader(http.StatusNoContent)
 		}
 		return
 	}

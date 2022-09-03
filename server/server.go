@@ -67,8 +67,8 @@ func (p *Server) GetCertificate(ctx context.Context, req *pb.GetCertificateReque
 			domain := req.GetDomain()
 			domain, err := idna.Lookup.ToASCII(domain)
 			if err != nil {
-				p.log.With(zap.Error(err)).Infof("got invalid domain name, domain= %v", domain)
-				return nil, ErrInvalidDomainName
+				p.log.Infof("got invalid domain name, domain= %v", domain)
+				return nil, drpcerr.WithCode(ErrInvalidDomainName, CodeBadRequest)
 			}
 			certTyp, certName = p.cfg.CheckCertTypeByDomain(domain)
 		} else if req.GetName() != "" {
@@ -77,7 +77,8 @@ func (p *Server) GetCertificate(ctx context.Context, req *pb.GetCertificateReque
 
 		switch certTyp {
 		case pb.Certificate_UNKNOWN:
-			return nil, ErrHostNotPermitted
+			p.log.Infof("cannot determine certificate type, certName= %v", certName)
+			return nil, drpcerr.WithCode(ErrHostNotPermitted, CodeBadRequest)
 		case pb.Certificate_SELF_SIGNED:
 			cert, err = p.selfSinged.GetCertificate(ctx)
 		case pb.Certificate_MANAGED:
@@ -91,18 +92,20 @@ func (p *Server) GetCertificate(ctx context.Context, req *pb.GetCertificateReque
 	}
 	if err != nil {
 		p.log.With(zap.Error(err)).Errorf("failed get certificate, typ= %v, name= %v", certTyp, certName)
-		return nil, ErrGetCertificate
+		return nil, drpcerr.WithCode(ErrGetCertificate, CodeInternalError)
 	}
 	if time.Until(cert.Leaf.NotAfter) <= 0 {
-		p.log.Warnf("got expired certificate, typ= %v, name= %v", certTyp, certName)
-		return nil, ErrCertificateIsExpired
+		p.log.Errorf("got expired certificate, typ= %v, name= %v", certTyp, certName)
+		return nil, drpcerr.WithCode(ErrCertificateIsExpired, CodeInternalError)
 	}
 
 	pbCert, err := marshalCertToPb(certTyp, cert, disableOCSPStapling)
 	if err != nil {
 		p.log.With(zap.Error(err)).Errorf("failed marshal certificate, typ= %v, name= %v", certTyp, certName)
-		return nil, ErrMarshalCertificate
+		return nil, drpcerr.WithCode(ErrMarshalCertificate, CodeInternalError)
 	}
+
+	p.log.Infof("success get certificate, typ= %v, name= %v", certTyp, certName)
 	resp := &pb.GetCertificateResponse{
 		Cert:         pbCert,
 		OcspStapling: nil,
@@ -111,21 +114,50 @@ func (p *Server) GetCertificate(ctx context.Context, req *pb.GetCertificateReque
 }
 
 func (p *Server) GetOCSPStapling(ctx context.Context, req *pb.GetOCSPStaplingRequest) (*pb.GetOCSPStaplingResponse, error) {
-	domain := req.GetDomain()
-	fp := req.GetFingerprint()
-	domain, err := idna.Lookup.ToASCII(domain)
-	if err != nil {
-		p.log.With(zap.Error(err)).Infof("got invalid domain name, domain= %v", domain)
-		return nil, drpcerr.WithCode(ErrInvalidDomainName, CodeBadRequest)
+	resp, domain, err := p.internalGetOCSPStapling(ctx, req)
+	if err == nil {
+		p.log.Infof("success get OCSP stapling, domain= %v, fp= %v", domain, req.GetFingerprint())
+		return resp, nil
 	}
+
+	switch err {
+	case ErrInvalidDomainName:
+		p.log.Infof("got invalid domain name, domain= %v", domain)
+		return nil, drpcerr.WithCode(ErrInvalidDomainName, CodeBadRequest)
+	case ErrHostNotPermitted:
+		p.log.Infof("host is not permitted, domain= %v", domain)
+		return nil, drpcerr.WithCode(ErrHostNotPermitted, CodeBadRequest)
+	case ErrOCSPStaplingNotSupported:
+		p.log.Infof("OCSP stapling is not supported, domain= %v", domain)
+		return nil, drpcerr.WithCode(ErrOCSPStaplingNotSupported, CodeBadRequest)
+	case ErrOCSPStaplingNotCached:
+		p.log.Infof("OCSP stapling is not cached, domain= %v", domain)
+		return nil, drpcerr.WithCode(ErrOCSPStaplingNotCached, CodeNoContent)
+	default:
+		p.log.With(zap.Error(err)).Errorf("failed get OCSP stapling, domain= %v, fp= %v", domain, req.GetFingerprint())
+		return nil, drpcerr.WithCode(err, CodeInternalError)
+	}
+}
+
+func (p *Server) internalGetOCSPStapling(ctx context.Context, req *pb.GetOCSPStaplingRequest) (
+	resp *pb.GetOCSPStaplingResponse, domain string, err error) {
+	domain = req.GetDomain()
+	fp := req.GetFingerprint()
+	asciiDomain, err := idna.Lookup.ToASCII(domain)
+	if err != nil {
+		err = ErrInvalidDomainName
+		return
+	}
+	domain = asciiDomain
 
 	certTyp, certName := p.cfg.CheckCertTypeByDomain(domain)
 	switch certTyp {
 	case pb.Certificate_UNKNOWN:
-		return nil, drpcerr.WithCode(ErrHostNotPermitted, CodeBadRequest)
-	case pb.Certificate_ALPN,
-		pb.Certificate_SELF_SIGNED:
-		return nil, drpcerr.WithCode(ErrOCSPStaplingNotSupported, CodeBadRequest)
+		err = ErrHostNotPermitted
+		return
+	case pb.Certificate_ALPN, pb.Certificate_SELF_SIGNED:
+		err = ErrOCSPStaplingNotSupported
+		return
 	}
 
 	ocspKey := getOCSPKey(certTyp, certName)
@@ -142,22 +174,21 @@ func (p *Server) GetOCSPStapling(ctx context.Context, req *pb.GetOCSPStaplingReq
 	}
 	ocspStapling, nextUpdate, err := p.ocsp.GetOCSPStapling(ctx, ocspKey, fp, checkCachedCert)
 	if err != nil {
-		p.log.With(zap.Error(err)).Errorf("failed get OCSP stapling, domain= %v, fp= %v", domain, fp)
-		return nil, err
+		return
 	}
 
 	var ttl int64
 	if !nextUpdate.IsZero() {
 		ttl = utils.LimitTTL(time.Until(nextUpdate))
 	}
-	resp := &pb.GetOCSPStaplingResponse{
+	resp = &pb.GetOCSPStaplingResponse{
 		OcspStapling: &pb.OCSPStapling{
 			Raw:           ocspStapling,
 			NextUpdateSec: nextUpdate.Unix(),
 			TtlSec:        ttl,
 		},
 	}
-	return resp, nil
+	return
 }
 
 func marshalCertToPb(typ pb.Certificate_Type, cert *tls.Certificate, disableOCSPStapling bool) (*pb.Certificate, error) {
