@@ -59,7 +59,7 @@ without any reloading:
 
 - OpenResty per-worker LRU cache with cdata pointer (Golang client uses in memory copy-on-write cache), fallback to
 - OpenResty shared memory cache (not needed for Golang client), fallback to
-- In memory copy-on-write cache within backend ssl-cert-server, finally go to
+- In-memory cache within backend ssl-cert-server, finally go to
 - Storage or ACME server.
 
 The cached certificates and OCSP staple is automatically renewed and refreshed in backend ssl-cert-server.
@@ -169,10 +169,10 @@ http {
         }
 
         # Fallback certificate required by nginx, self-signed is ok.
-        # openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
-        #   -subj '/CN=sni-support-required-for-valid-ssl' \
-        #   -keyout /etc/nginx/certs/fallback-self-signed.key \
-        #   -out /etc/nginx/certs/fallback-self-signed.crt
+        # ssl-cert-server generate-self-signed \
+        #   -days 3650 \
+        #   -cert-out /etc/nginx/certs/fallback-self-signed.crt \
+        #   -key-out /etc/nginx/certs/fallback-self-signed.key
         ssl_certificate /etc/nginx/certs/fallback-self-signed.crt;
         ssl_certificate_key /etc/nginx/certs/fallback-self-signed.key;
 
@@ -222,8 +222,8 @@ func main() {
 
 ## Dependency
 
-- [OpenResty](https://openresty.org/)
-- [lua-resty-http](https://github.com/pintsized/lua-resty-http)
+- [OpenResty](https://openresty.org/) >= 1.9.7.2
+- [lua-resty-http](https://github.com/ledgetech/lua-resty-http) >= 0.16.1
 
 ## Change history
 
