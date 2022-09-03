@@ -7,7 +7,7 @@ The ssl-cert-server automatically and transparently issues SSL certificates from
 as requests are received, when a certificate needs a renewal, it automatically renews the
 certificate asynchronously in background.
 
-The Openresty plugin uses the `ssl_certificate_by_lua` functionality in OpenResty 1.9.7.2+.
+The OpenResty plugin uses the `ssl_certificate_by_lua` functionality in OpenResty 1.9.7.2+.
 
 By using ssl-cert-server to register SSL certificates with Let's Encrypt,
 you agree to the [Let's Encrypt Subscriber Agreement](https://letsencrypt.org/repository/).
@@ -21,14 +21,16 @@ Many thanks 😀
 
 1. Minimal dependency, easy deployment, friendly to distributed environment.
 2. High performance, very low latency added to user requests.
-3. Issue and renew certificate for each domain using http-01 challenge, support Openresty and Golang.
+3. Issue and renew certificate for each domain using http-01 challenge, support OpenResty and Golang.
 4. Issue and renew certificate for each domain using tls-alpn-01 challenge, support Golang.
-5. Issue and renew **wildcard certificate**, using dns-01 challenge, support Openresty and Golang.
-6. Serve manually-managed certificates.
-7. Serve OCSP stapling, with cache and asynchronous renewal, the latency is negligible.
-8. Generate and serve self-signed certificate.
-9. Graceful restart like Nginx without losing any requests.
-10. Support directory and Redis as cache storage, adding new storage support is easy.
+5. Issue and renew **SAN certificate** using dns-01/http-01 challenge, support OpenResty and Golang.
+6. Issue and renew **SAN certificate** using tls-alpn-01 challenge, support Golang.
+7. Issue and renew **wildcard certificate**, using dns-01 challenge, support OpenResty and Golang.
+8. Serve manually-managed certificates.
+9. Serve OCSP stapling, with cache and asynchronous renewal, the latency is negligible.
+10. Generate and serve self-signed certificate.
+11. Graceful restart like Nginx without losing any requests.
+12. Support directory and Redis as cache storage, adding new storage support is easy.
 
 **NOTE: currently this program is designed to be used inside intranet,
 security features are not seriously considered, be sure to PROTECT your certificate server
@@ -75,7 +77,7 @@ however this is a spare-time project and has not known deployment for large prod
 
 ## Installation
 
-### For Openresty
+### For OpenResty
 
 The lua library is published with [OPM](https://opm.openresty.org/),
 the following command will install the ssl-cert-server library, as well as it's dependency "lua-resty-http".
@@ -88,8 +90,9 @@ installed under "/usr/local/openresty" as example (you may need to use sudo to g
 ```bash
 mkdir -p /usr/local/openresty/site/lualib/resty
 cd /usr/local/openresty/site/lualib/resty
-wget https://raw.githubusercontent.com/pintsized/lua-resty-http/master/lib/resty/http.lua
-wget https://raw.githubusercontent.com/pintsized/lua-resty-http/master/lib/resty/http_headers.lua
+wget https://raw.githubusercontent.com/ledgetech/lua-resty-http/v0.16.1/lib/resty/http.lua
+wget https://raw.githubusercontent.com/ledgetech/lua-resty-http/v0.16.1/lib/resty/http_connect.lua
+wget https://raw.githubusercontent.com/ledgetech/lua-resty-http/v0.16.1/lib/resty/http_headers.lua
 wget https://raw.githubusercontent.com/jxskiss/ssl-cert-server/master/lib/resty/ssl-cert-server.lua
 ```
 
@@ -227,6 +230,19 @@ func main() {
 
 ## Change history
 
+### v0.6.0 @ 2022-09-03
+
+- Main refactor from the ground up.
+- new: support ACME servers other than Let's Encrypt
+- new: support issue and renew SAN certificates
+- new: use a new configuration format (v2)
+- new: support query certificate by configured name
+- change: refactor HTTP api to use [drpc][drpc] for better maintainability and consistency
+- change: change to use [acmez][acmez] (instead of `acme/autocert` and `lego`) to talk with ACME servers
+
+[drpc]: https://github.com/storj/drpc
+[acmez]: https://github.com/mholt/acmez
+
 ### v0.5.0 @ 2022-06-12
 
 - fix: incorrect behavior when querying OCSP stapling before query certificate
@@ -302,12 +318,3 @@ This release is a major change with quite a lot of new features and improvements
 ### v0.1.1 @ 2018-01-06
 
 Initial public release.
-
-## TODO
-
-1. ~~Implement better cache strategy;~~
-2. ~~Handle backend server failure more robustly;~~
-3. ~~Test case for both cert-server and openresty library~~
-   (The acme-related work is done by golang's acme/autocert package,
-   which is well tested. Any error in the lua library and golang
-   request handlers are carefully handled.)
