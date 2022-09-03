@@ -1,6 +1,7 @@
 package tlsconfig
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -8,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,14 +16,19 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/crypto/acme"
 	"golang.org/x/net/idna"
+
+	"github.com/jxskiss/ssl-cert-server/lib/tlsconfig/proto"
 )
 
+// ALPNProto is the ALPN protocol name used by a CA server when validating
+// tls-alpn-01 challenges.
+const ALPNProto = "acme-tls/1"
+
 type cacheCertificate struct {
-	cert        *tls.Certificate
-	certType    int
-	fingerprint string
+	*proto.Certificate
+
+	cert *tls.Certificate
 
 	certExpire  int64
 	certRefresh int64
@@ -43,9 +48,7 @@ type Client struct {
 }
 
 func NewClient(sslCertServerHost string, opts Options) *Client {
-	if opts.ErrorLog == nil {
-		opts.ErrorLog = log.Printf
-	}
+	opts.fillDefaults()
 	if !strings.HasPrefix(sslCertServerHost, "http://") {
 		sslCertServerHost = "http://" + sslCertServerHost
 	}
@@ -58,7 +61,7 @@ func NewClient(sslCertServerHost string, opts Options) *Client {
 	go client.watch()
 
 	// make host policy
-	client.hostPolicy = makeHostWhitelist(opts.AllowDomains...)
+	client.hostPolicy = opts.makeHostPolicy()
 
 	// preload certificates for pre-defined domain names
 	client.preloadDomains(opts.PreloadAsync, opts.PreloadDomains...)
@@ -86,7 +89,7 @@ func (c *Client) addCachedCert(key string, cert *cacheCertificate) {
 	c.cache.Store(newCache)
 }
 
-func (c *Client) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+func (c *Client) GetTLSCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	name := hello.ServerName
 
 	// Note that this conversion is necessary because some server names in the handshakes
@@ -109,14 +112,14 @@ func (c *Client) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 	}
 
 	var cert *tls.Certificate
-	var isALPN01 = len(hello.SupportedProtos) == 1 && hello.SupportedProtos[0] == acme.ALPNProto
+	var isALPN01 = len(hello.SupportedProtos) == 1 && hello.SupportedProtos[0] == ALPNProto
 	if isALPN01 {
 		cert, err = c.getALPN01Certificate(name)
 	} else {
 		cert, err = c.getCertificate(name)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("tlsconfig: failed get certificate: %v", err)
+		return nil, fmt.Errorf("tlsconfig: get certificate: %v", err)
 	}
 	return cert, err
 }
@@ -126,14 +129,13 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 	cacheCert := c.getCachedCert(cacheKey)
 	if cacheCert != nil {
 		now := time.Now().Unix()
-		// in case the cached OCSP stapling is going to expired, abandon it
+		// In case the cached OCSP stapling is going to be expired, abandon it.
 		if cacheCert.staplingExpire > 0 && cacheCert.staplingExpire <= now-60 {
-			newCert := *cacheCert.cert
-			newCert.OCSPStaple = nil
+			copyCert := *cacheCert.cert
+			copyCert.OCSPStaple = nil
 			newCacheCert := &cacheCertificate{
-				cert:            &newCert,
-				certType:        cacheCert.certType,
-				fingerprint:     cacheCert.fingerprint,
+				Certificate:     cacheCert.Certificate,
+				cert:            &copyCert,
 				certExpire:      cacheCert.certExpire,
 				certRefresh:     cacheCert.certRefresh,
 				staplingExpire:  0,
@@ -145,7 +147,7 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 		return cacheCert.cert, nil
 	}
 
-	// first request for a new domain, give it a long time
+	// This is the first request for a new domain, give it a long time.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -157,9 +159,8 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 	// If OCSP is enabled, get it.
 	// And since OCSP stapling is optional, we don't fail the server request
 	// in case of OCSP stapling unavailable.
-	if !c.opts.DisableStapling &&
-		hasStapling(cacheCert.certType, cacheCert.cert) {
-		stapling, staplingExpire, staplingRefresh, err := c.requestStapling(ctx, domainName, cacheCert.fingerprint)
+	if !c.opts.DisableOCSPStapling && cacheCert.HasOcspStapling {
+		stapling, staplingExpire, staplingRefresh, err := c.requestStapling(ctx, domainName, cacheCert.Fp)
 		if err != nil {
 			c.opts.ErrorLog("[WARN] tlsconfig: failed request OCSP stapling: domain= %s err= %v", domainName, err)
 		} else {
@@ -167,7 +168,8 @@ func (c *Client) getCertificate(domainName string) (*tls.Certificate, error) {
 			cacheCert.staplingExpire = staplingExpire
 			cacheCert.staplingRefresh = staplingRefresh
 		}
-		// ensure OCSP stapling loaded as soon as possible
+
+		// Ensure the OCSP stapling been loaded as soon as possible.
 		if len(cacheCert.cert.OCSPStaple) == 0 {
 			go c.eagerPullOCSPStapling(domainName)
 		}
@@ -210,17 +212,66 @@ func (c *Client) eagerPullOCSPStapling(domainName string) {
 	}
 }
 
+type (
+	GetCertificateRequest  = proto.GetCertificateRequest
+	GetCertificateResponse = proto.GetCertificateResponse
+)
+
+func (c *Client) RequestCertificate(ctx context.Context, req *GetCertificateRequest) (resp *GetCertificateResponse, err error) {
+	apiURL := c.serverHost + "/sslcertserver.CertServer/GetCertificate"
+	data, _ := json.Marshal(req)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != 200 {
+		err = proto.DecodeError(httpResp.StatusCode, httpResp.Body)
+		return nil, err
+	}
+
+	resp = &proto.GetCertificateResponse{}
+	err = json.NewDecoder(httpResp.Body).Decode(resp)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+type v1CertResponse struct {
+	Type        int    `json:"type"`
+	Cert        string `json:"cert"`
+	PKey        string `json:"pkey"`
+	Fingerprint string `json:"fingerprint"`
+	ExpireAt    int64  `json:"expire_at"` // seconds since epoch
+	TTL         int64  `json:"ttl"`       // in seconds
+}
+
+func (v1 *v1CertResponse) toV2Certificate(tlsCert *tls.Certificate) *proto.Certificate {
+	v2Cert := &proto.Certificate{
+		Type:            proto.ToV2CertificateType(v1.Type),
+		PubKey:          v1.Cert,
+		PrivKey:         v1.PKey,
+		Fp:              v1.Fingerprint,
+		NotBeforeSec:    0, // not used for now
+		NotAfterSec:     v1.ExpireAt,
+		TtlSec:          v1.TTL,
+		HasOcspStapling: false,
+	}
+	v2Cert.HasOcspStapling = proto.V1HasOCSPStapling(v1.Type, tlsCert)
+	return v2Cert
+}
+
 func (c *Client) requestCertificate(ctx context.Context, domainName string, isALPN01 bool) (
 	cacheCert *cacheCertificate, err error,
 ) {
-	var response struct {
-		Type        int    `json:"type"`
-		Cert        string `json:"cert"`
-		PKey        string `json:"pkey"`
-		Fingerprint string `json:"fingerprint"`
-		ExpireAt    int64  `json:"expire_at"` // seconds since epoch
-		TTL         int64  `json:"ttl"`       // in seconds
-	}
+	var response v1CertResponse
 
 	apiPath := c.serverHost + "/cert/" + domainName
 	if isALPN01 {
@@ -254,10 +305,10 @@ func (c *Client) requestCertificate(ctx context.Context, domainName string, isAL
 	}
 	cert.Leaf = leaf
 
+	v2Cert := response.toV2Certificate(&cert)
 	cacheCert = &cacheCertificate{
+		Certificate: v2Cert,
 		cert:        &cert,
-		certType:    response.Type,
-		fingerprint: response.Fingerprint,
 		certExpire:  response.ExpireAt,
 		certRefresh: time.Now().Unix() + response.TTL,
 	}
@@ -342,9 +393,8 @@ func (c *Client) refreshDomainCertificate(domainName string, cacheCert *cacheCer
 	// we may change the OCSPStaple below
 	copyCert := *cacheCert.cert
 	newCacheCert = &cacheCertificate{
+		Certificate:     cacheCert.Certificate,
 		cert:            &copyCert,
-		certType:        cacheCert.certType,
-		fingerprint:     cacheCert.fingerprint,
 		certRefresh:     cacheCert.certRefresh,
 		certExpire:      cacheCert.certExpire,
 		staplingRefresh: cacheCert.staplingRefresh,
@@ -363,20 +413,17 @@ func (c *Client) refreshDomainCertificate(domainName string, cacheCert *cacheCer
 
 		// certificate renewed or type changed
 		// save new cert and drop the old OCSP stapling information
-		if newCacheCert.certType != respCert.certType ||
-			newCacheCert.fingerprint != respCert.fingerprint {
+		if newCacheCert.Type != respCert.Type || newCacheCert.Fp != respCert.Fp {
+			newCacheCert.Certificate = respCert.Certificate
 			newCacheCert.cert = respCert.cert
-			newCacheCert.certType = respCert.certType
-			newCacheCert.fingerprint = respCert.fingerprint
 			newCacheCert.staplingExpire = 0
 			newCacheCert.staplingRefresh = 0
 		}
 	}
 
-	if !c.opts.DisableStapling &&
-		hasStapling(newCacheCert.certType, newCacheCert.cert) &&
+	if !c.opts.DisableOCSPStapling && newCacheCert.HasOcspStapling &&
 		newCacheCert.staplingRefresh <= now {
-		newStapling, expireAt, refreshAt, err := c.requestStapling(ctx, domainName, newCacheCert.fingerprint)
+		newStapling, expireAt, refreshAt, err := c.requestStapling(ctx, domainName, newCacheCert.Fp)
 		if err != nil {
 			c.opts.ErrorLog("[WARN] tlsconfig: failed refresh OCSP stapling: domain= %s err= %v", domainName, err)
 			// if the OCSP stapling is going to expire, abandon it
@@ -396,8 +443,4 @@ func (c *Client) refreshDomainCertificate(domainName string, cacheCert *cacheCer
 	}
 
 	return newCacheCert, updated, nil
-}
-
-func hasStapling(certType int, cert *tls.Certificate) bool {
-	return certType < 100 && len(cert.Leaf.OCSPServer) > 0
 }

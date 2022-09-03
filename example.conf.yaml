@@ -1,3 +1,4 @@
+version: "2"
 listen: "127.0.0.1:8999"
 pid_file: "ssl-cert-server.pid"
 
@@ -8,54 +9,90 @@ storage:
     addr: "127.0.0.1:6379"
     prefix: ""
 
-managed:
-  - pattern: "abc\\.example\\.com"
-    cert_key: "abc.example.com"
-  - pattern: "(\\w+)\\.example\\.com"
-    cert_key: "managed_example_com"
-
-lets_encrypt:
-  staging: false
-  force_rsa: false
-  renew_before: 30
-  email: "abc@example.com"
-  domains:
-    - "site1.example.com"
-    - "site2.example.com"
-  re_patterns:
-    - "api1-(\\w+)\\.example\\.com"
-    - "api2-(\\w+)\\.example\\.com"
-
-wildcard:
-  lego_data_path: ""
-  dns_credentials:
-    - name: alidns_1
-      provider: alidns
-      env:
-        ALICLOUD_ACCESS_KEY: "xxxx"
-        ALICLOUD_SECRET_KEY: "xxxx"
-  certificates:
-    - root_domain: "example.com"
-      credential: alidns_1
-      domains:
-        - "*.example.com"
-        - "example.com"
-    - root_domain: "abc.example.com"
-      credential: alidns_1
-      domains:
-        - "*.abc.example.com"
-
 self_signed:
   enable: false
-  check_sni: false
+  check_domain_name: false
+  domains:
+    - "a.example.com"
+    - "a.example-1.com"
+  domain_regex:
+    - "[a-z]+\\.example\\.com"
+    - "a\\.example-1\\.com"
   valid_days: 3650
-  organization:
-    - "SSL Cert Server Self-Signed"
-  cert_key: "self_signed"
+  organization: "SSL Cert Server Self-Signed"
+
+managed:
+  reload_interval: "10m"
+  certificates:
+    - name: "abc.example.com"
+      domains:
+        - "abc.example.com"
+      domain_regex:
+        - "(abc|def)\\.example\\.com"
+        - "img-\\d+\\.example\\.com"
+      no_ocsp_stapling: false
+    - name: "_wildcard.example.com"
+      domains:
+        - "example.com"
+        - "*.example.com"
+      domain_regex:
+        - "(abc|def)\\.example\\.com"
+        - "biz-\\w+\\.example\\.com"
+      no_ocsp_stapling: false
+
+acme:
+  directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+  force_rsa: false
+  renew_before: 30 # days
+  default_account:
+    email: "acme@example.com"
+  accounts:
+    - email: "another@somedomain.com"
+  dns_credentials:
+    - name: example_alidns
+      provider: alidns
+      env:
+        ALICLOUD_ACCESS_KEY: "my_access_key_xxxx"
+        ALICLOUD_SECRET_KEY: "my_secret_key_xxxx"
+    - name: another_godaddy_1
+      provider: godaddy
+      env:
+        GODADDY_API_KEY: "my_api_key_xxxx"
+        GODADDY_API_SECRET: "my_api_secret_xxxx"
+    - name: another_cloudflare_1
+      provider: cloudflare
+      env:
+        CLOUDFLARE_EMAIL: "my_email_xxxx"
+        CLOUDFLARE_API_KEY: "my_api_key_xxxx"
+  on_demand:
+    domains:
+      - a.example-2.com
+      - b.example-2.com
+    domain_regex:
+      - "api-1-(\\w+)\\.example\\.com"
+      - "api-2-(\\w+)\\.example\\.com"
+  named:
+    certificates:
+      - name: "z_san_example_com"
+        account: "acme@example.com"
+        dns_credential: example_alidns
+        force_rsa: false
+        domains:
+          - "z1.example.com"
+          - "z2.example.com"
+          - "z3.example.com"
+      - name: "_wildcard.y.somedomain.com"
+        account: "another@somedomain.com"
+        dns_credential: another_cloudflare_1
+        force_rsa: false
+        domains:
+          - "y.somedomain.com"
+          - "*.y.somedomain.com"
 
 
 # Explanations
 
+# version: Format version of the configuration file. New since version 0.6.0.
 # listen: The address ssl-cert-server should listen, be sure DON'T open the server to the world.
 # pid_file: The pid file path, it's used when doing graceful restarts.
 
@@ -66,32 +103,44 @@ self_signed:
 # storage.redis.addr: The connection string of Redis.
 # storage.redis.prefix: An optional string to use as prefix of certificate keys.
 
-# managed: Managed certificates settings.
-# managed.pattern: pattern to match domain names
-# managed.cert_key: if pattern is matched, the key of the cache storage to load certificate from
-
-# lets_encrypt: ACME Let's Encrypt settings.
-# lets_encrypt.staging: Use Let's Encrypt staging directory (default false)
-# lets_encrypt.force_rsa: Generate certificates with 2048-bit RSA keys (default false)
-# lets_encrypt.renew-before: Renew certificates before how many days (default 30)
-# lets_encrypt.email: ACME account contact email, if Let's Encrypt client's key is already registered, this is not used
-# lets_encrypt.domains: Allowed domain names, match by check string equality
-# lets_encrypt.re_patterns: Allowed domain name regex patterns
-
-# wildcard: Wildcard certificates settings.
-# wildcard.lego_data_path: Directory to use for Lego data, default is ${storage.dir_cache}/.lego/
-# wildcard.dns_credentials: The credentials to use for DNS-01 challenges, check Lego's documents for available providers
-# wildcard.dns_credentials.name: Name of a DNS credential, must be unique in wildcard.dns_credentials
-# wildcard.dns_credentials.provider: The DNS provider code to use with Lego
-# wildcard.dns_credentials.env: Environment variables to use with Lego
-# wildcard.certificates: The wildcard certificates to manage
-# wildcard.certificates.root_domain: The root domain for a wildcard certificate, must be unique in wildcard.certificates
-# wildcard.certificates.credential: The credential to use for this certificate, must be a valid credential configured in wildcard.dns_credentials
-# wildcard.certificates.domains: The domains to issue and renew certificate
-
 # self_signed: Self signed certificate settings.
 # self_signed.enable: whether enable self-signed certificate (default false)
-# self_signed.check_sni: whether check SNI name for self-signed certificate (default false)
+# self_signed.check_domain_name: whether check domain name for self-signed certificate (default false)
+# self_signed.domains: allowed domain list to for self-signed certificate
+# self_signed.domain_regex: allowed domains by regular expression for self-signed certificate
 # self_signed.valid_days: how may days to set the certificate when generating self-signed certificate
 # self_signed.organization: organization to set the certificate when generating self-signed certificate
-# self_signed.cert_key: the key to put generated self-signed certificate into cache storage
+
+# managed: Managed certificates settings.
+# managed.reload_interval: interval to reload managed certificates from storage
+# managed.certificates: configuration of managed certificates
+# managed.certificates.name: name of a managed certificate
+# managed.certificates.domains: domain name list for the certificate
+# managed.certificates.domain_regex: domain names by regular expression for the certificate
+# managed.certificates.no_ocsp_stapling: disable OCSP stapling for the certificate (default false)
+
+# acme: ACME settings.
+# acme.directory_url: the ACME directory url to use (default "https://acme-v02.api.letsencrypt.org/directory")
+# acme.force_rsa: force to generate certificates with 2048-bit RSA keys (default force)
+# acme.renew_before: renew certificates before how many days (default 30)
+# acme.default_account: the default ACME account to use when not specified
+# acme.default_account.email: email of the default ACME account
+# acme.accounts: extra ACME accounts settings
+# acme.accounts.email: email of the ACME account
+
+# acme.dns_credentials: DNS credentials to use with dns-01 challenge for named certificates.
+# acme.dns_credentials.name: name of a DNS credential config
+# acme.dns_credentials.provider: the type of a DNS credential config, see https://go-acme.github.io/lego/dns/ for available DNS providers and the corresponding configurations
+# acme.dns_credentials.env: environment variables required by the DNS provider
+
+# acme.on_demand: On-demand ACME certificates.
+# acme.on_demand.domains: allowed domain list to issue certificates on-demand
+# acme.on_demand.domain_regex: allowed domains by regular expression to issue certificates on-demand
+
+# acme.named: Named ACME certificates settings.
+# acme.named.certificates: named certificates to issue from ACME server
+# acme.named.certificates.name: name of the ACME certificate
+# acme.named.certificates.account: the account (email) to use for this certificate
+# acme.named.certificates.dns_credential: the DNS credential to use for this certificate
+# acme.named.certificates.force_rsa: force to use 2048-bit RSA key for this certificate (default false)
+# acme.named.certificates.domains: domain list to issue for the certificate, can be normal or wildcard domain name
