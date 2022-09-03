@@ -9,6 +9,7 @@ require (
 	github.com/jxskiss/gopkg/v2 v2.0.0-beta.8
 	github.com/jxskiss/mcli v0.2.1
 	github.com/mholt/acmez v1.0.4
+	github.com/stretchr/testify v1.8.0
 	go.uber.org/atomic v1.10.0
 	go.uber.org/zap v1.22.0
 	golang.org/x/crypto v0.0.0-20220518034528-6f7dac969898
@@ -104,7 +105,6 @@ require (
 	github.com/softlayer/xmlrpc v0.0.0-20200409220501-5f089df7cb7e // indirect
 	github.com/spf13/cast v1.5.0 // indirect
 	github.com/stretchr/objx v0.4.0 // indirect
-	github.com/stretchr/testify v1.8.0 // indirect
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.0.287 // indirect
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/dnspod v1.0.287 // indirect
 	github.com/transip/gotransip/v6 v6.6.1 // indirect
