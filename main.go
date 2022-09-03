@@ -12,12 +12,10 @@ import (
 	"time"
 
 	"github.com/cloudflare/tableflip"
-	legolog "github.com/go-acme/lego/v4/log"
 	"github.com/jxskiss/gopkg/v2/zlog"
 	"github.com/jxskiss/mcli"
 
 	"github.com/jxskiss/ssl-cert-server/pkg/config"
-	"github.com/jxskiss/ssl-cert-server/pkg/legoutil"
 	"github.com/jxskiss/ssl-cert-server/pkg/utils"
 	"github.com/jxskiss/ssl-cert-server/server"
 )
@@ -26,7 +24,6 @@ const VERSION = "0.6.0-wip"
 
 func main() {
 	zlog.SetDevelopment()
-	legolog.Logger = legoutil.NewLogger()
 	defer zlog.Sync()
 
 	mcli.AddHelp()
@@ -137,8 +134,8 @@ func cmdRunServer() {
 
 func cmdGenerateSelfSignedCertificate() {
 	var opts struct {
-		ValidDays     int      `cli:"--valid-days, number of days the cert is valid for" default:"365"`
-		Out           string   `cli:"--out, output single file contains both private key and certificate" default:"./self_signed"`
+		Days          int      `cli:"--days, number of days the cert is valid for" default:"365"`
+		BundleOut     string   `cli:"--bundle-out, output single file contains both private key and certificate" default:"./self_signed"`
 		CertOut       string   `cli:"--cert-out, output certificate file" default:"./self_signed.crt"`
 		KeyOut        string   `cli:"--key-out, output private key file" default:"./self_signed.key"`
 		Organizations []string `cli:"--organization, certificate organization (may be given multiple times)"`
@@ -151,7 +148,7 @@ func cmdGenerateSelfSignedCertificate() {
 		opts.Organizations = config.DefaultSelfSignedOrganizations
 	}
 
-	certPEM, privKeyPEM, err := server.CreateSelfSignedCertificate(opts.ValidDays, opts.Organizations)
+	certPEM, privKeyPEM, err := server.CreateSelfSignedCertificate(opts.Days, opts.Organizations)
 	if err != nil {
 		log.Fatalf("failed create self-signed certificate: %v", err)
 	}
@@ -161,7 +158,7 @@ func cmdGenerateSelfSignedCertificate() {
 	}
 	if err == nil {
 		outData := append(privKeyPEM, certPEM...)
-		err = utils.WriteFile(opts.Out, outData, 0600)
+		err = utils.WriteFile(opts.BundleOut, outData, 0600)
 	}
 	if err != nil {
 		log.Fatalf("failed write self-signed certificate files: %v", err)

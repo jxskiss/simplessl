@@ -6,7 +6,7 @@ require (
 	github.com/cloudflare/tableflip v1.2.3
 	github.com/go-acme/lego/v4 v4.8.0
 	github.com/go-redis/redis/v8 v8.11.5
-	github.com/jxskiss/gopkg/v2 v2.0.0-beta.5
+	github.com/jxskiss/gopkg/v2 v2.0.0-beta.8
 	github.com/jxskiss/mcli v0.2.1
 	github.com/mholt/acmez v1.0.4
 	go.uber.org/atomic v1.10.0
@@ -51,7 +51,7 @@ require (
 	github.com/form3tech-oss/jwt-go v3.2.2+incompatible // indirect
 	github.com/go-errors/errors v1.0.1 // indirect
 	github.com/go-resty/resty/v2 v2.1.1-0.20191201195748-d7b97669fe48 // indirect
-	github.com/goccy/go-json v0.9.10 // indirect
+	github.com/goccy/go-json v0.9.11 // indirect
 	github.com/gofrs/uuid v3.2.0+incompatible // indirect
 	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
