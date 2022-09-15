@@ -6,7 +6,8 @@ storage:
   type: "dir_cache"  # or redis
   dir_cache: "./secret-dir"
   redis:
-    addr: "127.0.0.1:6379"
+    # See https://pkg.go.dev/github.com/go-redis/redis/v8#ParseURL for detail format of addr.
+    addr: "redis://<user>:<password>@<host>:<port>/<db_number>"
     prefix: ""
 
 self_signed:
@@ -100,7 +101,7 @@ acme:
 # storage.type: "dir_cache" or "redis"
 # storage.dir_cache: If type is "dir_cache", which directory to store cached certificate files.
 # storage.redis: If type is "redis", the settings of Redis.
-# storage.redis.addr: The connection string of Redis.
+# storage.redis.addr: The connection string of Redis. See https://pkg.go.dev/github.com/go-redis/redis/v8#ParseURL for detail format of addr.
 # storage.redis.prefix: An optional string to use as prefix of certificate keys.
 
 # self_signed: Self signed certificate settings.

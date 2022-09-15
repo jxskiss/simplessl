@@ -23,14 +23,13 @@ Many thanks 😀
 2. High performance, very low latency added to user requests.
 3. Issue and renew certificate for each domain using http-01 challenge, support OpenResty and Golang.
 4. Issue and renew certificate for each domain using tls-alpn-01 challenge, support Golang.
-5. Issue and renew **SAN certificate** using dns-01/http-01 challenge, support OpenResty and Golang.
-6. Issue and renew **SAN certificate** using tls-alpn-01 challenge, support Golang.
-7. Issue and renew **wildcard certificate**, using dns-01 challenge, support OpenResty and Golang.
-8. Serve manually-managed certificates.
-9. Serve OCSP stapling, with cache and asynchronous renewal, the latency is negligible.
-10. Generate and serve self-signed certificate.
-11. Graceful restart like Nginx without losing any requests.
-12. Support directory and Redis as cache storage, adding new storage support is easy.
+5. Issue and renew **SAN certificate** using tls-alpn-01 challenge, support Golang.
+6. Issue and renew **wildcard certificate**, using dns-01 challenge, support OpenResty and Golang.
+7. Serve manually-managed certificates.
+8. Serve OCSP stapling, with cache and asynchronous renewal, the latency is negligible.
+9. Generate and serve self-signed certificate.
+10. Graceful restart like Nginx without losing any requests.
+11. Support directory and Redis as cache storage, adding new storage support is easy.
 
 **NOTE: currently this program is designed to be used inside intranet,
 security features are not seriously considered, be sure to PROTECT your certificate server
