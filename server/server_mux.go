@@ -64,8 +64,7 @@ func NewV1API(server *Server) V1API {
 }
 
 type v1APIImpl struct {
-	server     *Server
-	httpSolver HTTPAndTLSALPNSolver
+	server *Server
 
 	log *zap.SugaredLogger
 }
@@ -79,14 +78,14 @@ func (p *v1APIImpl) GetHandler(r *http.Request) http.HandlerFunc {
 		return p.HandleOCSPStapling
 	}
 	if strings.HasPrefix(path, acmeChallengePath) {
-		return p.handleACMEChallenge
+		return p.HandleACMEChallenge
 	}
 	return nil
 }
 
 // HandleACMEChallenge handles requests of ACME challenges.
-func (p *v1APIImpl) handleACMEChallenge(w http.ResponseWriter, r *http.Request) {
-	p.httpSolver.HandleACMEChallenge(w, r)
+func (p *v1APIImpl) HandleACMEChallenge(w http.ResponseWriter, r *http.Request) {
+	p.server.httpSolver.HandleACMEChallenge(w, r)
 }
 
 // HandleCertificate handles legacy requests of SSL certificate.

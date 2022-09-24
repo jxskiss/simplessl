@@ -59,7 +59,7 @@ func (p *acmeImpl) newACMEClient(ctx context.Context, certName string) (account 
 			acme.ChallengeTypeTLSALPN01: p.httpSolver,
 		},
 	}
-	if cert.DNSCredential != "" {
+	if cert != nil && cert.DNSCredential != "" {
 		dnsCredential := p.cfg.GetDNSCredential(cert.DNSCredential)
 		if dnsCredential != nil {
 			dnsSolver, err := NewDNSSolver(dnsCredential)
