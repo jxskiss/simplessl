@@ -229,6 +229,13 @@ func main() {
 
 ## Change history
 
+### v0.6.2 @ 2022-11-02
+
+- change: tidy logging message
+- change: update dependencies
+- fix: invalid memory address or nil pointer dereference (#10)
+- fix: add example of config redis storage with options (#11)
+
 ### v0.6.0 @ 2022-09-03
 
 - Main refactor from the ground up.

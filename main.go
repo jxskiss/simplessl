@@ -20,7 +20,7 @@ import (
 	"github.com/jxskiss/ssl-cert-server/server"
 )
 
-const VERSION = "0.6.0"
+const VERSION = "0.6.2"
 
 func main() {
 	zlog.SetDevelopment()
