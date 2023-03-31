@@ -9,9 +9,9 @@ const (
 )
 
 var (
+	ErrInvalidRequestData       = errors.New("invalid request data")
 	ErrInvalidDomainName        = errors.New("invalid domain name")
 	ErrHostNotPermitted         = errors.New("host name not permitted")
-	ErrUnknownCertificateType   = errors.New("unknown certificate type")
 	ErrCertificateIsExpired     = errors.New("certificate is expired")
 	ErrGetCertificate           = errors.New("cannot get certificate")
 	ErrMarshalCertificate       = errors.New("cannot marshal certificate")

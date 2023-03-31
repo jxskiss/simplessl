@@ -2,8 +2,6 @@ t/servroot/
 t/error.log
 lua-resty-http*
 luacov*
-vendor/*
-!vendor/modules.txt
 output/
 temp/
 
@@ -12,3 +10,5 @@ temp/
 *.exe
 ssl-cert-server
 ssl-cert-server.pid
+secret-dir/*
+!secret-dir/.gitkeep

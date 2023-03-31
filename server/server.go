@@ -15,6 +15,7 @@ import (
 	"golang.org/x/net/idna"
 	"storj.io/drpc/drpcerr"
 
+	"github.com/jxskiss/ssl-cert-server/pkg/bus"
 	"github.com/jxskiss/ssl-cert-server/pkg/config"
 	"github.com/jxskiss/ssl-cert-server/pkg/pb"
 	"github.com/jxskiss/ssl-cert-server/pkg/utils"
@@ -24,6 +25,7 @@ type Server struct {
 	pb.DRPCCertServerUnimplementedServer
 
 	cfg        *config.Config
+	bus        bus.EventBus
 	selfSinged SelfSignedManager
 	managed    ManagedCertManager
 	acme       ACMEManager
@@ -35,6 +37,7 @@ type Server struct {
 
 func NewServer(
 	cfg *config.Config,
+	bus bus.EventBus,
 	selfSigned SelfSignedManager,
 	managed ManagedCertManager,
 	acme ACMEManager,
@@ -43,6 +46,7 @@ func NewServer(
 ) *Server {
 	return &Server{
 		cfg:        cfg,
+		bus:        bus,
 		selfSinged: selfSigned,
 		managed:    managed,
 		acme:       acme,
@@ -73,6 +77,9 @@ func (p *Server) GetCertificate(ctx context.Context, req *pb.GetCertificateReque
 			certTyp, certName = p.cfg.CheckCertTypeByDomain(domain)
 		} else if req.GetName() != "" {
 			certTyp, certName = p.cfg.CheckCertTypeByName(req.GetName())
+		} else {
+			p.log.Infof("got invalid request, no doman and certName")
+			return nil, drpcerr.WithCode(ErrInvalidRequestData, CodeBadRequest)
 		}
 
 		switch certTyp {
