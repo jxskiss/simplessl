@@ -112,10 +112,16 @@ func (p *Server) GetCertificate(ctx context.Context, req *pb.GetCertificateReque
 		return nil, drpcerr.WithCode(ErrMarshalCertificate, CodeInternalError)
 	}
 
+	var ocspStapling *pb.OCSPStapling
+	if req.GetWantOcspStapling() && pbCert.HasOcspStapling {
+		ocspResp, _ := p.getOCSPStaplingByCertTypeAndName(ctx, certTyp, certName, pbCert.Fp)
+		ocspStapling = ocspResp.GetOcspStapling()
+	}
+
 	p.log.Infof("success get certificate, typ= %v, name= %v", certTyp, certName)
 	resp := &pb.GetCertificateResponse{
 		Cert:         pbCert,
-		OcspStapling: nil,
+		OcspStapling: ocspStapling,
 	}
 	return resp, nil
 }
@@ -166,6 +172,14 @@ func (p *Server) internalGetOCSPStapling(ctx context.Context, req *pb.GetOCSPSta
 		err = ErrOCSPStaplingNotSupported
 		return
 	}
+
+	resp, err = p.getOCSPStaplingByCertTypeAndName(ctx, certTyp, certName, fp)
+	return resp, domain, err
+}
+
+func (p *Server) getOCSPStaplingByCertTypeAndName(
+	ctx context.Context, certTyp pb.Certificate_Type, certName string, fp string) (
+	resp *pb.GetOCSPStaplingResponse, err error) {
 
 	ocspKey := getOCSPKey(certTyp, certName)
 	checkCachedCert := func() (*tls.Certificate, error) {

@@ -7,7 +7,7 @@ require (
 	github.com/envoyproxy/go-control-plane v0.11.0
 	github.com/go-acme/lego/v4 v4.10.2
 	github.com/go-redis/redis/v8 v8.11.5
-	github.com/jxskiss/gopkg/v2 v2.8.0
+	github.com/jxskiss/gopkg/v2 v2.8.1
 	github.com/jxskiss/mcli v0.7.0
 	github.com/mholt/acmez v1.1.0
 	github.com/montag451/go-eventbus v0.0.0-20221122231605-fe0e69e79461
@@ -44,7 +44,7 @@ require (
 	github.com/andres-erbsen/clock v0.0.0-20160526145045-9e14626cd129 // indirect
 	github.com/aws/aws-sdk-go v1.44.225 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
-	github.com/bytedance/sonic v1.8.7 // indirect
+	github.com/bytedance/sonic v1.8.8 // indirect
 	github.com/cenkalti/backoff/v4 v4.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/chenzhuoyu/base64x v0.0.0-20221115062448-fe3a3abad311 // indirect
@@ -141,7 +141,7 @@ require (
 	golang.org/x/arch v0.3.0 // indirect
 	golang.org/x/mod v0.8.0 // indirect
 	golang.org/x/oauth2 v0.6.0 // indirect
-	golang.org/x/sys v0.6.0 // indirect
+	golang.org/x/sys v0.7.0 // indirect
 	golang.org/x/text v0.8.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	golang.org/x/tools v0.6.0 // indirect
