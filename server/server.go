@@ -15,7 +15,6 @@ import (
 	"golang.org/x/net/idna"
 	"storj.io/drpc/drpcerr"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/bus"
 	"github.com/jxskiss/ssl-cert-server/pkg/config"
 	"github.com/jxskiss/ssl-cert-server/pkg/pb"
 	"github.com/jxskiss/ssl-cert-server/pkg/utils"
@@ -25,7 +24,6 @@ type Server struct {
 	pb.DRPCCertServerUnimplementedServer
 
 	cfg        *config.Config
-	bus        bus.EventBus
 	selfSinged SelfSignedManager
 	managed    ManagedCertManager
 	acme       ACMEManager
@@ -37,7 +35,6 @@ type Server struct {
 
 func NewServer(
 	cfg *config.Config,
-	bus bus.EventBus,
 	selfSigned SelfSignedManager,
 	managed ManagedCertManager,
 	acme ACMEManager,
@@ -46,7 +43,6 @@ func NewServer(
 ) *Server {
 	return &Server{
 		cfg:        cfg,
-		bus:        bus,
 		selfSinged: selfSigned,
 		managed:    managed,
 		acme:       acme,
@@ -57,7 +53,18 @@ func NewServer(
 }
 
 func (p *Server) GetCertificate(ctx context.Context, req *pb.GetCertificateRequest) (*pb.GetCertificateResponse, error) {
-	var err error
+	resp, _, err := p.internalGetCertificate(ctx, req)
+	return resp, err
+}
+
+func (p *Server) SDSCertProvider(ctx context.Context, req *pb.GetCertificateRequest) (
+	resp *pb.GetCertificateResponse, certKey string, err error) {
+	return p.internalGetCertificate(ctx, req)
+}
+
+func (p *Server) internalGetCertificate(ctx context.Context, req *pb.GetCertificateRequest) (
+	resp *pb.GetCertificateResponse, certKey string, err error) {
+
 	var certName string
 	var certTyp pb.Certificate_Type
 	var cert *tls.Certificate
@@ -72,20 +79,20 @@ func (p *Server) GetCertificate(ctx context.Context, req *pb.GetCertificateReque
 			domain, err := idna.Lookup.ToASCII(domain)
 			if err != nil {
 				p.log.Infof("got invalid domain name, domain= %v", domain)
-				return nil, drpcerr.WithCode(ErrInvalidDomainName, CodeBadRequest)
+				return nil, "", drpcerr.WithCode(ErrInvalidDomainName, CodeBadRequest)
 			}
 			certTyp, certName = p.cfg.CheckCertTypeByDomain(domain)
 		} else if req.GetName() != "" {
 			certTyp, certName = p.cfg.CheckCertTypeByName(req.GetName())
 		} else {
 			p.log.Infof("got invalid request, no doman and certName")
-			return nil, drpcerr.WithCode(ErrInvalidRequestData, CodeBadRequest)
+			return nil, "", drpcerr.WithCode(ErrInvalidRequestData, CodeBadRequest)
 		}
 
 		switch certTyp {
 		case pb.Certificate_UNKNOWN:
 			p.log.Infof("cannot determine certificate type, certName= %v", certName)
-			return nil, drpcerr.WithCode(ErrHostNotPermitted, CodeBadRequest)
+			return nil, "", drpcerr.WithCode(ErrHostNotPermitted, CodeBadRequest)
 		case pb.Certificate_SELF_SIGNED:
 			cert, err = p.selfSinged.GetCertificate(ctx)
 		case pb.Certificate_MANAGED:
@@ -99,17 +106,17 @@ func (p *Server) GetCertificate(ctx context.Context, req *pb.GetCertificateReque
 	}
 	if err != nil {
 		p.log.With(zap.Error(err)).Errorf("failed get certificate, typ= %v, name= %v", certTyp, certName)
-		return nil, drpcerr.WithCode(ErrGetCertificate, CodeInternalError)
+		return nil, "", drpcerr.WithCode(ErrGetCertificate, CodeInternalError)
 	}
 	if time.Until(cert.Leaf.NotAfter) <= 0 {
 		p.log.Errorf("got expired certificate, typ= %v, name= %v", certTyp, certName)
-		return nil, drpcerr.WithCode(ErrCertificateIsExpired, CodeInternalError)
+		return nil, "", drpcerr.WithCode(ErrCertificateIsExpired, CodeInternalError)
 	}
 
 	pbCert, err := marshalCertToPb(certTyp, cert, disableOCSPStapling)
 	if err != nil {
 		p.log.With(zap.Error(err)).Errorf("failed marshal certificate, typ= %v, name= %v", certTyp, certName)
-		return nil, drpcerr.WithCode(ErrMarshalCertificate, CodeInternalError)
+		return nil, "", drpcerr.WithCode(ErrMarshalCertificate, CodeInternalError)
 	}
 
 	var ocspStapling *pb.OCSPStapling
@@ -119,11 +126,12 @@ func (p *Server) GetCertificate(ctx context.Context, req *pb.GetCertificateReque
 	}
 
 	p.log.Infof("success get certificate, typ= %v, name= %v", certTyp, certName)
-	resp := &pb.GetCertificateResponse{
+	resp = &pb.GetCertificateResponse{
 		Cert:         pbCert,
 		OcspStapling: ocspStapling,
 	}
-	return resp, nil
+	certKey = getCertKey(certTyp, certName)
+	return resp, certKey, nil
 }
 
 func (p *Server) GetOCSPStapling(ctx context.Context, req *pb.GetOCSPStaplingRequest) (*pb.GetOCSPStaplingResponse, error) {
@@ -181,7 +189,7 @@ func (p *Server) getOCSPStaplingByCertTypeAndName(
 	ctx context.Context, certTyp pb.Certificate_Type, certName string, fp string) (
 	resp *pb.GetOCSPStaplingResponse, err error) {
 
-	ocspKey := getOCSPKey(certTyp, certName)
+	certKey := getCertKey(certTyp, certName)
 	checkCachedCert := func() (*tls.Certificate, error) {
 		switch certTyp {
 		case pb.Certificate_MANAGED:
@@ -193,7 +201,7 @@ func (p *Server) getOCSPStaplingByCertTypeAndName(
 		}
 		return nil, ErrHostNotPermitted
 	}
-	ocspStapling, nextUpdate, err := p.ocsp.GetOCSPStapling(ctx, ocspKey, fp, checkCachedCert)
+	ocspStapling, nextUpdate, err := p.ocsp.GetOCSPStapling(ctx, certKey, fp, checkCachedCert)
 	if err != nil {
 		return
 	}

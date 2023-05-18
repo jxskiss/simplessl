@@ -12,6 +12,7 @@ import (
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
+	"github.com/jxskiss/ssl-cert-server/pkg/bus"
 	"github.com/jxskiss/ssl-cert-server/pkg/config"
 	"github.com/jxskiss/ssl-cert-server/pkg/pb"
 )
@@ -20,9 +21,15 @@ type ManagedCertManager interface {
 	GetCertificate(ctx context.Context, name string) (*tls.Certificate, error)
 }
 
-func NewManagedCertManager(cfg *config.Config, storage StorageManager, ocspMgr OCSPManager) ManagedCertManager {
+func NewManagedCertManager(
+	cfg *config.Config,
+	bus bus.EventBus,
+	storage StorageManager,
+	ocspMgr OCSPManager,
+) ManagedCertManager {
 	return &managedCertMgrImpl{
 		cfg:  cfg,
+		bus:  bus,
 		stor: storage,
 		ocsp: ocspMgr,
 		log:  zlog.Named("managed").Sugar(),
@@ -33,6 +40,7 @@ type managedCertMgrImpl struct {
 	cache sync.Map
 
 	cfg  *config.Config
+	bus  bus.EventBus
 	stor StorageManager
 	ocsp OCSPManager
 
@@ -46,8 +54,8 @@ func (p *managedCertMgrImpl) GetCertificate(ctx context.Context, name string) (*
 	}
 
 	if p.cfg.IsManagedCertEnableOCSPStapling(name) {
-		ocspKey := getOCSPKey(pb.Certificate_MANAGED, name)
-		p.ocsp.Watch(ctx, ocspKey, func() (*tls.Certificate, error) {
+		certKey := getCertKey(pb.Certificate_MANAGED, name)
+		p.ocsp.Watch(ctx, certKey, func() (*tls.Certificate, error) {
 			// When watching from certificate manager,
 			// there is no need to trigger watching again,
 			// use the internal method here.
@@ -124,8 +132,14 @@ func (p *managedCert) reload(ctx context.Context) {
 	p.Unlock()
 
 	certName := p.name
-	ocspKey := getOCSPKey(pb.Certificate_MANAGED, certName)
-	p.mgr.ocsp.NotifyCertChange(ocspKey, func() (*tls.Certificate, error) {
+	certKey := getCertKey(pb.Certificate_MANAGED, certName)
+	p.mgr.ocsp.NotifyCertChange(certKey, func() (*tls.Certificate, error) {
 		return p.mgr._getCertificate(context.Background(), certName)
 	})
+
+	pubErr := p.mgr.bus.PublishCertChange(certKey, bus.ChangeType_Cert)
+	if pubErr != nil {
+		p.mgr.log.With(zap.Error(pubErr), zap.String("certKey", certKey)).
+			Error("failed publish managed cert reload change")
+	}
 }

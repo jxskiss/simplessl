@@ -52,13 +52,13 @@ func RunServer() {
 
 	bus := pkgbus.NewEventBus()
 	storMgr := server.NewStorageManager(cfg, stor)
-	ocspMgr := server.NewOCSPManager()
+	ocspMgr := server.NewOCSPManager(bus)
 	selfSigned := server.NewSelfSignedManager(cfg, storMgr)
-	managed := server.NewManagedCertManager(cfg, storMgr, ocspMgr)
+	managed := server.NewManagedCertManager(cfg, bus, storMgr, ocspMgr)
 	httpSolver := server.NewHTTPAndTLSALPNSolver()
 	acmeManager := server.NewACMEManager(cfg, bus, storMgr, ocspMgr, httpSolver)
-	svr := server.NewServer(cfg, bus, selfSigned, managed, acmeManager, ocspMgr, httpSolver)
-	sds := pkgsds.New(bus, svr)
+	svr := server.NewServer(cfg, selfSigned, managed, acmeManager, ocspMgr, httpSolver)
+	sds := pkgsds.New(bus, svr.SDSCertProvider)
 
 	httpHandler, err := server.NewMux(svr)
 	if err != nil {

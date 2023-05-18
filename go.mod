@@ -7,7 +7,7 @@ require (
 	github.com/envoyproxy/go-control-plane v0.11.0
 	github.com/go-acme/lego/v4 v4.10.2
 	github.com/go-redis/redis/v8 v8.11.5
-	github.com/jxskiss/gopkg/v2 v2.8.1
+	github.com/jxskiss/gopkg/v2 v2.8.2
 	github.com/jxskiss/mcli v0.7.0
 	github.com/mholt/acmez v1.1.0
 	github.com/montag451/go-eventbus v0.0.0-20221122231605-fe0e69e79461

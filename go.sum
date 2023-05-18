@@ -326,8 +326,8 @@ github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHm
 github.com/jstemmer/go-junit-report v0.0.0-20190106144839-af01ea7f8024/go.mod h1:6v2b51hI/fHJwM22ozAgKL4VKDeJcHhJFhtBdhmNjmU=
 github.com/jtolds/gls v4.20.0+incompatible/go.mod h1:QJZ7F/aHp+rZTRtaJ1ow/lLfFfVYBRgL+9YlvaHOwJU=
 github.com/julienschmidt/httprouter v1.2.0/go.mod h1:SYymIcj16QtmaHHD7aYtjjsJG7VTCxuUUipMqKk8s4w=
-github.com/jxskiss/gopkg/v2 v2.8.1 h1:OyMq0iEjLAanYMID8GucUjQcTiVjzCIU1KsTr/ekL0M=
-github.com/jxskiss/gopkg/v2 v2.8.1/go.mod h1:TfLFqZreE5aeFsAXjyeeTpovQfOsItXIO0hSBE903fU=
+github.com/jxskiss/gopkg/v2 v2.8.2 h1:bq77QIFf+1pXI7R1c9FNEiw6DiRaZo62aV6XA0XYeYc=
+github.com/jxskiss/gopkg/v2 v2.8.2/go.mod h1:TfLFqZreE5aeFsAXjyeeTpovQfOsItXIO0hSBE903fU=
 github.com/jxskiss/mcli v0.7.0 h1:POYibJSs2WtcIj5Z2kwy5f2pYiRdD5Xg9Cbu5bbNINY=
 github.com/jxskiss/mcli v0.7.0/go.mod h1:BprGXZbpUne0FSkyfiqArywIvZUYRov92aie1+9uVNo=
 github.com/k0kubun/go-ansi v0.0.0-20180517002512-3bf9e2903213 h1:qGQQKEcAR99REcMpsXCp3lJ03zYT1PkRd3kQGPn9GVg=

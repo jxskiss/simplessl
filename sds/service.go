@@ -22,7 +22,6 @@ import (
 
 	"github.com/jxskiss/ssl-cert-server/pkg/bus"
 	"github.com/jxskiss/ssl-cert-server/pkg/pb"
-	"github.com/jxskiss/ssl-cert-server/pkg/utils"
 )
 
 // Identifier is the identifier of the secret discovery service.
@@ -44,7 +43,7 @@ var ValidationContextAltName = "validation_context"
 //	}
 type Service struct {
 	bus bus.EventBus
-	cs  pb.DRPCCertServerServer
+	cpf CertProviderFunc
 
 	logger *zap.Logger
 
@@ -52,11 +51,11 @@ type Service struct {
 }
 
 // New creates a new sds.Service that will support multiple TLS certificates.
-func New(bus bus.EventBus, cs pb.DRPCCertServerServer) *Service {
+func New(bus bus.EventBus, certProviderFunc CertProviderFunc) *Service {
 	logger := zlog.Named("sds")
 	svc := &Service{
 		bus:    bus,
-		cs:     cs,
+		cpf:    certProviderFunc,
 		stopCh: make(chan struct{}),
 		logger: logger,
 	}
@@ -81,7 +80,7 @@ func (srv *Service) DeltaSecrets(sds secret.SecretDiscoveryService_DeltaSecretsS
 // StreamSecrets implements the gRPC SecretDiscoveryService service and returns
 // a stream of TLS certificates.
 func (srv *Service) StreamSecrets(sds secret.SecretDiscoveryService_StreamSecretsServer) (err error) {
-	srv.logger.Info("serving StreamSecrets request")
+	srv.logger.Info("Serving StreamSecrets request")
 
 	ctx := sds.Context()
 	errCh := make(chan error)
@@ -99,9 +98,8 @@ func (srv *Service) StreamSecrets(sds secret.SecretDiscoveryService_StreamSecret
 	}()
 
 	var t1 time.Time
-	var certTyp pb.Certificate_Type
-	var certName string
 	var tlsCert *tls.Certificate
+	var certKey string
 	var changeCh chan string
 	var nonce, versionInfo string
 	var req *discovery.DiscoveryRequest
@@ -139,38 +137,41 @@ func (srv *Service) StreamSecrets(sds secret.SecretDiscoveryService_StreamSecret
 			req = r
 
 			if len(req.ResourceNames) > 1 {
-				srv.logRequest(ctx, r, "multiple resourceNames not supported", t1, nil)
+				srv.logRequest(ctx, r, "Multiple resourceNames not supported", t1, nil)
 				return errors.New("multiple resourceNames not supported")
 			}
 
 			resourceName := req.ResourceNames[0]
-			certTyp, certName, tlsCert, err = srv.getCertificate(ctx, resourceName)
+			tlsCert, certKey, err = srv.getCertificate(ctx, resourceName)
 			if err != nil {
-				srv.logRequest(ctx, r, "error get certificate", t1, err)
+				srv.logRequest(ctx, r, "Get certificate failed", t1, err)
 				return err
 			}
 
-			changeCh = make(chan string)
-			eventName := fmt.Sprintf("%d/%s", certTyp, certName)
-			subHandler, err := srv.bus.SubscribeCertChangeEvent(eventName, func(e eventbus.Event, t time.Time) {
-				changeCh <- resourceName
-			})
-			if err != nil {
-				srv.logRequest(ctx, r, "error subscribe cert changes", t1, err)
-				return err
-			} else {
-				msg := fmt.Sprintf("subscribed cert changes for %s", resourceName)
-				srv.logRequest(ctx, r, msg, t1, nil)
-				//nolint:gocritic
-				defer srv.bus.Unsubscribe(subHandler)
+			if certKey != "" {
+				changeCh = make(chan string)
+				subHandler, err := srv.bus.SubscribeCertChanges(certKey,
+					func(e eventbus.Event, t time.Time) {
+						changeCh <- resourceName
+					})
+				if err != nil {
+					srv.logRequest(ctx, r, "Subscribe cert changes failed", t1, err,
+						zap.String("certKey", certKey))
+					return err
+				} else {
+					srv.logRequest(ctx, r, "Subscribed cert changes", t1, nil,
+						zap.String("certKey", certKey))
+					//nolint:gocritic
+					defer srv.bus.Unsubscribe(subHandler)
+				}
 			}
 		case resourceName := <-changeCh:
 			t1 = time.Now()
 			isRenewal = true
 			versionInfo = srv.versionInfo()
-			certTyp, certName, tlsCert, err = srv.getCertificate(ctx, resourceName)
+			tlsCert, certKey, err = srv.getCertificate(ctx, resourceName)
 			if err != nil {
-				srv.logRequest(ctx, req, "error renew certificate", t1, err)
+				srv.logRequest(ctx, req, "Renew certificate failed", t1, err)
 				return err
 			}
 		case err := <-errCh:
@@ -197,9 +198,11 @@ func (srv *Service) StreamSecrets(sds secret.SecretDiscoveryService_StreamSecret
 
 		nonce = dr.Nonce
 		if isRenewal {
-			srv.logRequest(ctx, req, "Certificate renewed", t1, err, zap.String("nonce", nonce))
+			srv.logRequest(ctx, req, "Certificate renewed", t1, err,
+				zap.String("nonce", nonce))
 		} else {
-			srv.logRequest(ctx, req, "Certificate sent", t1, err, zap.String("nonce", nonce))
+			srv.logRequest(ctx, req, "Certificate sent", t1, err,
+				zap.String("nonce", nonce))
 		}
 	}
 }
@@ -208,68 +211,62 @@ func (srv *Service) StreamSecrets(sds secret.SecretDiscoveryService_StreamSecret
 func (srv *Service) FetchSecrets(ctx context.Context, r *discovery.DiscoveryRequest) (*discovery.DiscoveryResponse, error) {
 	ctx = srv.addRequestToContext(ctx, r)
 
-	logger := zlog.GetSugaredLogger(ctx)
-	logger.Debug("fetch request: %v", easy.JSON(r))
+	var t1 = time.Now()
+	var err error
+	var tlsCert *tls.Certificate
+
+	srv.logRequest(ctx, r, "Serving FetchSecrets request", t1, nil)
+	srv.logger.Sugar().Debugf("FetchSecrets request: %v", easy.LazyJSON(r))
 
 	if len(r.ResourceNames) > 1 {
-		logger.Info("multiple resourceNames not supported")
+		srv.logRequest(ctx, r, "Multiple resourceNames not supported", t1, nil)
 		return nil, errors.New("multiple resourceNames not supported")
 	}
 
-	var err error
-	var tlsCert *tls.Certificate
-	var t1 = time.Now()
 	resourceName := r.ResourceNames[0]
-	_, _, tlsCert, err = srv.getCertificate(ctx, resourceName)
+	tlsCert, _, err = srv.getCertificate(ctx, resourceName)
 	if err != nil {
-		srv.logRequest(ctx, r, "error get certificate", t1, err)
+		srv.logRequest(ctx, r, "Get certificate failed", t1, err)
 		return nil, err
 	}
 
-	versionInfo := time.Now().UTC().Format(time.RFC3339)
+	versionInfo := srv.versionInfo()
 	return getDiscoveryResponse(r, versionInfo, []*tls.Certificate{tlsCert})
 }
 
 func (srv *Service) getCertificate(ctx context.Context, resourceName string) (
-	certTyp pb.Certificate_Type, certName string, tlsCert *tls.Certificate, err error) {
-	log := srv.logger.Sugar()
-	log.Infof("getting certificate, resourceName= %v", resourceName)
+	tlsCert *tls.Certificate, certKey string, err error) {
 
 	parts := strings.SplitN(resourceName, "/", 2)
 	if len(parts) != 2 {
-		log.Infof("got invalid resourceName: %v", resourceName)
 		err = status.Error(codes.InvalidArgument, "resourceName is invalid")
-		return 0, "", nil, err
+		return nil, "", err
 	}
 
-	var req *pb.GetCertificateRequest
+	var req = &pb.GetCertificateRequest{
+		WantOcspStapling: true,
+	}
 	typ, name := parts[0], parts[1]
 	switch typ {
 	case "domainName":
-		req = &pb.GetCertificateRequest{
-			Domain:           name,
-			WantOcspStapling: true,
-		}
+		req.Domain = name
 	case "certName":
-		req = &pb.GetCertificateRequest{
-			Name:             name,
-			WantOcspStapling: true,
-		}
+		req.Name = name
 	default:
-		log.Infof("got invalid resourceName: %v", resourceName)
 		err = status.Error(codes.InvalidArgument, "resourceName is invalid")
-		return 0, "", nil, err
+		return nil, "", err
 	}
-	resp, err := srv.cs.GetCertificate(ctx, req)
+	resp, certKey, err := srv.cpf(ctx, req)
 	if err != nil {
-		return 0, "", nil, err
+		return nil, "", err
 	}
 
-	tlsCert, err = utils.ToTLSCertificate([]byte(resp.Cert.PubKey), []byte(resp.Cert.PrivKey))
+	tlsCert, err = toTLSCertificate(resp)
 	if err != nil {
-		return 0, "", nil, err
+		return nil, certKey, err
 	}
-	return pb.Certificate_Type(resp.Cert.Type), name, tlsCert, nil
+
+	return tlsCert, certKey, nil
 }
 
 func (srv *Service) versionInfo() string {
@@ -285,24 +282,10 @@ func (srv *Service) logRequest(ctx context.Context, r *discovery.DiscoveryReques
 	fields = append(fields,
 		zap.Time("grpc.start_time", start),
 		zap.Duration("grpc.duration", duration),
-		zap.Int64("grpc.durationNsec", duration.Nanoseconds()),
+		zap.Int64("grpc.durationMilli", duration.Milliseconds()),
 	)
 	if r != nil {
-		fields = append(fields,
-			zap.String("versionInfo", r.VersionInfo),
-			zap.Strings("resourceNames", r.ResourceNames),
-			zap.String("responseNonce", r.ResponseNonce),
-		)
-		if r.Node != nil {
-			fields = append(fields,
-				zap.String("node", r.Node.Id),
-				zap.String("cluster", r.Node.Cluster))
-		}
-		if r.ErrorDetail != nil {
-			fields = append(fields,
-				zap.Int32("code", r.ErrorDetail.Code),
-				zap.String("errDetail", r.ErrorDetail.Message))
-		}
+		fields = append(fields, getRequestFields(r)...)
 	}
 	if len(extra) > 0 {
 		fields = append(fields, extra...)
@@ -329,6 +312,10 @@ func (srv *Service) logRequest(ctx context.Context, r *discovery.DiscoveryReques
 }
 
 func (srv *Service) addRequestToContext(ctx context.Context, r *discovery.DiscoveryRequest) context.Context {
+	return zlog.AddFields(ctx, getRequestFields(r)...)
+}
+
+func getRequestFields(r *discovery.DiscoveryRequest) []zap.Field {
 	var fields []zap.Field
 	if r != nil {
 		fields = []zap.Field{
@@ -338,14 +325,14 @@ func (srv *Service) addRequestToContext(ctx context.Context, r *discovery.Discov
 		}
 		if r.Node != nil {
 			fields = append(fields,
-				zap.String("node", r.Node.Id),
-				zap.String("cluster", r.Node.Cluster))
+				zap.String("nodeId", r.Node.Id),
+				zap.String("nodeCluster", r.Node.Cluster))
 		}
 		if r.ErrorDetail != nil {
 			fields = append(fields,
-				zap.Int32("code", r.ErrorDetail.Code),
-				zap.String("errDetail", r.ErrorDetail.Message))
+				zap.Int32("errDetailCode", r.ErrorDetail.Code),
+				zap.String("errDetailMsg", r.ErrorDetail.Message))
 		}
 	}
-	return zlog.AddFields(ctx, fields...)
+	return fields
 }

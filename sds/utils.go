@@ -15,6 +15,7 @@ import (
 	auth "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 
+	"github.com/jxskiss/ssl-cert-server/pkg/pb"
 	"github.com/jxskiss/ssl-cert-server/pkg/utils"
 )
 
@@ -96,25 +97,43 @@ func getCertificateChain(name string, cert *tls.Certificate) ([]byte, error) {
 		}))
 	}
 
-	block := utils.ToPEMBlock(cert.PrivateKey)
+	privKeyBlock := utils.ToPEMBlock(cert.PrivateKey)
+	tlsCertificate := &auth.TlsCertificate{
+		CertificateChain: &core.DataSource{
+			Specifier: &core.DataSource_InlineBytes{InlineBytes: chain.Bytes()},
+		},
+		PrivateKey: &core.DataSource{
+			Specifier: &core.DataSource_InlineBytes{InlineBytes: pem.EncodeToMemory(privKeyBlock)},
+		},
+		// Password protected keys are not supported at the moment
+		// Password: &core.DataSource{
+		// 	Specifier: &core.DataSource_InlineBytes{InlineBytes: nil},
+		// },
+	}
+	if len(cert.OCSPStaple) > 0 {
+		tlsCertificate.OcspStaple = &core.DataSource{
+			Specifier: &core.DataSource_InlineBytes{InlineBytes: cert.OCSPStaple},
+		}
+	}
+
 	secret := auth.Secret{
 		Name: name,
 		Type: &auth.Secret_TlsCertificate{
-			TlsCertificate: &auth.TlsCertificate{
-				CertificateChain: &core.DataSource{
-					Specifier: &core.DataSource_InlineBytes{InlineBytes: chain.Bytes()},
-				},
-				PrivateKey: &core.DataSource{
-					Specifier: &core.DataSource_InlineBytes{InlineBytes: pem.EncodeToMemory(block)},
-				},
-				// Password protected keys are not supported at the moment
-				// Password: &core.DataSource{
-				// 	Specifier: &core.DataSource_InlineBytes{InlineBytes: nil},
-				// },
-			},
+			TlsCertificate: tlsCertificate,
 		},
 	}
 
 	v, err := proto.Marshal(&secret)
 	return v, errors.Wrapf(err, "error marshaling secret")
+}
+
+func toTLSCertificate(resp *pb.GetCertificateResponse) (*tls.Certificate, error) {
+	certPEM := []byte(resp.Cert.PubKey)
+	keyPEM := []byte(resp.Cert.PrivKey)
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, err
+	}
+	cert.OCSPStaple = resp.GetOcspStapling().GetRaw()
+	return &cert, nil
 }

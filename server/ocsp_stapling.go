@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -17,7 +16,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ocsp"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/pb"
+	"github.com/jxskiss/ssl-cert-server/pkg/bus"
 	"github.com/jxskiss/ssl-cert-server/pkg/utils"
 )
 
@@ -34,13 +33,14 @@ var (
 type CertFunc = func() (*tls.Certificate, error)
 
 type OCSPManager interface {
-	GetOCSPStapling(ctx context.Context, key string, fp string, checkCachedCert CertFunc) (der []byte, nextUpdate time.Time, err error)
-	Watch(ctx context.Context, key string, getCert CertFunc)
-	NotifyCertChange(key string, getCert CertFunc)
+	GetOCSPStapling(ctx context.Context, certKey string, fp string, checkCachedCert CertFunc) (der []byte, nextUpdate time.Time, err error)
+	Watch(ctx context.Context, certKey string, getCert CertFunc)
+	NotifyCertChange(certKey string, getCert CertFunc)
 }
 
-func NewOCSPManager() OCSPManager {
+func NewOCSPManager(bus bus.EventBus) OCSPManager {
 	return &ocspManagerImpl{
+		bus:      bus,
 		close:    make(chan struct{}),
 		certMap:  make(map[string]CertFunc),
 		stateMap: make(map[string]*ocspState),
@@ -50,6 +50,8 @@ func NewOCSPManager() OCSPManager {
 }
 
 type ocspManagerImpl struct {
+	bus bus.EventBus
+
 	close chan struct{}
 
 	certMu  sync.RWMutex
@@ -65,18 +67,18 @@ type ocspManagerImpl struct {
 	log *zap.Logger
 }
 
-func (p *ocspManagerImpl) NotifyCertChange(key string, getCert CertFunc) {
+func (p *ocspManagerImpl) NotifyCertChange(certKey string, getCert CertFunc) {
 	p.certMu.Lock()
-	p.certMap[key] = getCert
+	p.certMap[certKey] = getCert
 	p.certMu.Unlock()
 
-	p.log.With(zap.String("key", key)).Info("received cert change event")
+	p.log.With(zap.String("certKey", certKey)).Info("received cert change event")
 	ctx := context.Background()
-	go p.touchState(ctx, key)
+	go p.touchState(ctx, certKey)
 }
 
-func (p *ocspManagerImpl) GetOCSPStapling(ctx context.Context, key string, fp string, checkCachedCert CertFunc) (der []byte, nextUpdate time.Time, err error) {
-	der, nextUpdate, err = p._getOCSPStapling(key, fp)
+func (p *ocspManagerImpl) GetOCSPStapling(ctx context.Context, certKey string, fp string, checkCachedCert CertFunc) (der []byte, nextUpdate time.Time, err error) {
+	der, nextUpdate, err = p._getOCSPStapling(certKey, fp)
 
 	// If ssl-cert-server is restarted, clients may have already cached
 	// the certificate, then OCSP stapling requests may arrive before
@@ -87,24 +89,24 @@ func (p *ocspManagerImpl) GetOCSPStapling(ctx context.Context, key string, fp st
 	// Let's Encrypt. If we do get a cached certificate, try again to get
 	// OCSP stapling.
 	if err == ErrOCSPStaplingNotCached &&
-		!p.isCertificateCached(key) && checkCachedCert != nil {
+		!p.isCertificateCached(certKey) && checkCachedCert != nil {
 		_, err = checkCachedCert()
 		if err == nil {
-			der, nextUpdate, err = p._getOCSPStapling(key, fp)
+			der, nextUpdate, err = p._getOCSPStapling(certKey, fp)
 		}
 	}
 
 	return
 }
 
-func (p *ocspManagerImpl) isCertificateCached(key string) bool {
+func (p *ocspManagerImpl) isCertificateCached(certKey string) bool {
 	p.certMu.RLock()
 	defer p.certMu.RUnlock()
-	return p.certMap[key] != nil
+	return p.certMap[certKey] != nil
 }
 
-func (p *ocspManagerImpl) _getOCSPStapling(key string, fp string) (der []byte, nextUpdate time.Time, err error) {
-	state, ok := p.lookupState(key)
+func (p *ocspManagerImpl) _getOCSPStapling(certKey string, fp string) (der []byte, nextUpdate time.Time, err error) {
+	state, ok := p.lookupState(certKey)
 	if ok {
 		if fp == "" || fp == state.certFp {
 			state.RLock()
@@ -115,22 +117,22 @@ func (p *ocspManagerImpl) _getOCSPStapling(key string, fp string) (der []byte, n
 	return nil, time.Time{}, ErrOCSPStaplingNotCached
 }
 
-func (p *ocspManagerImpl) Watch(ctx context.Context, key string, getCert CertFunc) {
+func (p *ocspManagerImpl) Watch(ctx context.Context, certKey string, getCert CertFunc) {
 	p.certMu.RLock()
-	if p.certMap[key] != nil {
+	if p.certMap[certKey] != nil {
 		p.certMu.RUnlock()
 		return
 	}
 	p.certMu.RUnlock()
 
-	go p.watchNewCert(ctx, key, getCert)
+	go p.watchNewCert(ctx, certKey, getCert)
 }
 
-func (p *ocspManagerImpl) getCertificate(key string) (*tls.Certificate, error) {
+func (p *ocspManagerImpl) getCertificate(certKey string) (*tls.Certificate, error) {
 	certFunc := func() CertFunc {
 		p.certMu.RLock()
 		defer p.certMu.RUnlock()
-		return p.certMap[key]
+		return p.certMap[certKey]
 	}()
 	if certFunc == nil {
 		return nil, ErrOCSPStaplingNotCached
@@ -138,22 +140,22 @@ func (p *ocspManagerImpl) getCertificate(key string) (*tls.Certificate, error) {
 	return certFunc()
 }
 
-func (p *ocspManagerImpl) watchNewCert(ctx context.Context, key string, getCert CertFunc) {
+func (p *ocspManagerImpl) watchNewCert(ctx context.Context, certKey string, getCert CertFunc) {
 	p.certMu.Lock()
-	if p.certMap[key] != nil {
+	if p.certMap[certKey] != nil {
 		p.certMu.Unlock()
 		return
 	}
-	p.certMap[key] = getCert
+	p.certMap[certKey] = getCert
 	p.certMu.Unlock()
 
-	go p.touchState(ctx, key)
+	go p.touchState(ctx, certKey)
 }
 
-func (p *ocspManagerImpl) touchState(ctx context.Context, key string) {
-	cert, err := p.getCertificate(key)
+func (p *ocspManagerImpl) touchState(ctx context.Context, certKey string) {
+	cert, err := p.getCertificate(certKey)
 	if err != nil {
-		p.log.With(zap.String("key", key), zap.Error(err)).
+		p.log.With(zap.String("certKey", certKey), zap.Error(err)).
 			Error("failed get certificate")
 		return
 	}
@@ -161,21 +163,21 @@ func (p *ocspManagerImpl) touchState(ctx context.Context, key string) {
 		return
 	}
 
-	state, ok := p.lookupState(key)
+	state, ok := p.lookupState(certKey)
 	if ok {
 		if bytes.Equal(state.cert.Certificate[0], cert.Certificate[0]) {
 			return
 		}
 		// the cached state is outdated, remove it
-		p.deleteState(key, state)
+		p.deleteState(certKey, state)
 	}
 
 	// allow only single worker to do request for a single certificate
-	token, ok := p.markStateToken(key)
+	token, ok := p.markStateToken(certKey)
 	if !ok {
 		return
 	}
-	defer p.unmarkStateToken(key, token)
+	defer p.unmarkStateToken(certKey, token)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -191,41 +193,41 @@ func (p *ocspManagerImpl) touchState(ctx context.Context, key string) {
 	}
 	p.log.Info("success request OCSP stapling")
 
-	state = p.setState(key, cert, issuer, der, response)
+	state = p.setState(certKey, cert, issuer, der, response)
 	return
 }
 
-func (p *ocspManagerImpl) markStateToken(key string) (token uint64, ok bool) {
+func (p *ocspManagerImpl) markStateToken(certKey string) (token uint64, ok bool) {
 	p.tokenMu.Lock()
 	defer p.tokenMu.Unlock()
-	if _, ok := p.tokenMap[key]; ok {
+	if _, ok := p.tokenMap[certKey]; ok {
 		return 0, false
 	}
 	token = atomic.AddUint64(&p.tokenIncr, 1)
-	p.tokenMap[key] = token
+	p.tokenMap[certKey] = token
 	return token, true
 }
 
-func (p *ocspManagerImpl) unmarkStateToken(key string, token uint64) {
+func (p *ocspManagerImpl) unmarkStateToken(certKey string, token uint64) {
 	p.stateMu.Lock()
-	if tok, ok := p.tokenMap[key]; ok && token == tok {
-		delete(p.tokenMap, key)
+	if tok, ok := p.tokenMap[certKey]; ok && token == tok {
+		delete(p.tokenMap, certKey)
 	}
 	p.stateMu.Unlock()
 }
 
-func (p *ocspManagerImpl) lookupState(key string) (*ocspState, bool) {
+func (p *ocspManagerImpl) lookupState(certKey string) (*ocspState, bool) {
 	p.stateMu.RLock()
-	state, ok := p.stateMap[key]
+	state, ok := p.stateMap[certKey]
 	p.stateMu.RUnlock()
 	return state, ok
 }
 
-func (p *ocspManagerImpl) deleteState(key string, state *ocspState) {
+func (p *ocspManagerImpl) deleteState(certKey string, state *ocspState) {
 	p.stateMu.Lock()
-	curState, ok := p.stateMap[key]
+	curState, ok := p.stateMap[certKey]
 	if ok && state == curState {
-		delete(p.stateMap, key)
+		delete(p.stateMap, certKey)
 	}
 	p.stateMu.Unlock()
 
@@ -234,12 +236,12 @@ func (p *ocspManagerImpl) deleteState(key string, state *ocspState) {
 	}
 }
 
-func (p *ocspManagerImpl) setState(key string, cert *tls.Certificate, issuer *x509.Certificate, der []byte, response *ocsp.Response) *ocspState {
+func (p *ocspManagerImpl) setState(certKey string, cert *tls.Certificate, issuer *x509.Certificate, der []byte, response *ocsp.Response) *ocspState {
 	p.stateMu.Lock()
 	defer p.stateMu.Unlock()
 
 	fp := utils.CalcCertFingerprint(cert.Leaf)
-	renewal := newOCSPRenewal(p, key)
+	renewal := newOCSPRenewal(p, certKey)
 	state := &ocspState{
 		cert:       cert,
 		issuer:     issuer,
@@ -248,7 +250,15 @@ func (p *ocspManagerImpl) setState(key string, cert *tls.Certificate, issuer *x5
 		nextUpdate: response.NextUpdate,
 		renewal:    renewal,
 	}
-	p.stateMap[key] = state
+	p.stateMap[certKey] = state
+
+	pubErr := p.bus.PublishCertChange(certKey, bus.ChangeType_OCSPStapling)
+	if pubErr != nil {
+		p.log.Error("failed publish cert OCSP stapling change",
+			zap.Error(pubErr),
+			zap.String("certKey", certKey),
+		)
+	}
 
 	// start OCSP stapling renewal timer loop
 	go renewal.start(state.nextUpdate)
@@ -269,7 +279,8 @@ type ocspState struct {
 
 type ocspRenewal struct {
 	mgr *ocspManagerImpl
-	key string
+
+	certKey string
 
 	timerMu sync.Mutex
 	timer   *time.Timer
@@ -277,11 +288,11 @@ type ocspRenewal struct {
 	log *zap.Logger
 }
 
-func newOCSPRenewal(m *ocspManagerImpl, key string) *ocspRenewal {
+func newOCSPRenewal(m *ocspManagerImpl, certKey string) *ocspRenewal {
 	return &ocspRenewal{
-		mgr: m,
-		key: key,
-		log: zlog.Named("ocspRenewal").With(zap.String("key", key)),
+		mgr:     m,
+		certKey: certKey,
+		log:     zlog.Named("ocspRenewal").With(zap.String("certKey", certKey)),
 	}
 }
 
@@ -314,7 +325,7 @@ func (or *ocspRenewal) update() {
 		return
 	}
 
-	state, ok := or.mgr.lookupState(or.key)
+	state, ok := or.mgr.lookupState(or.certKey)
 	if !ok || state.renewal != or {
 		// state has been removed / replaced, stop the old renewal
 		or.timer = nil
@@ -340,6 +351,14 @@ func (or *ocspRenewal) update() {
 		state.der = der
 		state.nextUpdate = response.NextUpdate
 		next = or.next(response.NextUpdate)
+
+		pubErr := or.mgr.bus.PublishCertChange(or.certKey, bus.ChangeType_OCSPStapling)
+		if pubErr != nil {
+			or.log.Error("failed publish cert OCSP stapling change",
+				zap.Error(pubErr),
+				zap.String("certKey", or.certKey),
+			)
+		}
 	}
 
 	or.timer = time.AfterFunc(next, or.update)
@@ -386,8 +405,4 @@ func requestOCSPStapling(ctx context.Context, cert *tls.Certificate, issuer *x50
 		return nil, nil, err
 	}
 	return der, resp, nil
-}
-
-func getOCSPKey(typ pb.Certificate_Type, name string) string {
-	return fmt.Sprintf("%d:%s", int(typ), name)
 }

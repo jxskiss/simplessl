@@ -50,14 +50,6 @@ func LoadLocalTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-func ToTLSCertificate(certPEM, keyPEM []byte) (*tls.Certificate, error) {
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, err
-	}
-	return &cert, nil
-}
-
 func ToPEMBlock(data interface{}) *pem.Block {
 	var pemBlock *pem.Block
 	switch key := data.(type) {
