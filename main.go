@@ -7,7 +7,7 @@ import (
 	"github.com/jxskiss/gopkg/v2/zlog"
 	"github.com/jxskiss/mcli"
 
-	"github.com/jxskiss/ssl-cert-server/cmd"
+	"github.com/jxskiss/simplessl/cmd"
 )
 
 const VERSION = "0.7.0-dev"
@@ -39,5 +39,5 @@ func cmdPrintVersion() {
 			}
 		}
 	}
-	fmt.Printf("ssl-cert-server v%s-%s\n", VERSION, gitRevision)
+	fmt.Printf("simplessl v%s-%s\n", VERSION, gitRevision)
 }

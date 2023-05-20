@@ -11,7 +11,7 @@ import (
 	"github.com/go-acme/lego/v4/providers/dns"
 	"github.com/mholt/acmez/acme"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/config"
+	"github.com/jxskiss/simplessl/pkg/config"
 )
 
 var dnsMu sync.Mutex

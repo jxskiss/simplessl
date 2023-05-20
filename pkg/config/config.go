@@ -5,7 +5,7 @@ var DefaultSelfSignedOrganizations = []string{"SSL Cert Server Self-Signed"}
 type Config struct {
 	Version string `yaml:"version"`
 	Listen  string `yaml:"listen" default:"127.0.0.1:8999"`
-	PIDFile string `yaml:"pid_file" default:"ssl-cert-server.pid"`
+	PIDFile string `yaml:"pid_file" default:"simplessl.pid"`
 
 	EnableSDS     bool   `yaml:"enable_sds"`
 	SDSListen     string `yaml:"sds_listen" default:"127.0.0.1:8998"`

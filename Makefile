@@ -7,28 +7,28 @@ gen_proto:
 		api.proto
 
 gen_self_signed_certificates:
-	go build -o ./output/ssl-cert-server
-	./output/ssl-cert-server self-sign ca
-	./output/ssl-cert-server self-sign sds-client
-	./output/ssl-cert-server self-sign sds-server
+	go build -o ./output/simplessl
+	./output/simplessl self-sign ca
+	./output/simplessl self-sign sds-client
+	./output/simplessl self-sign sds-server
 
 
 build:
-	go build -o output/ssl-cert-server
+	go build -o output/simplessl
 
 tlsconfig_example:
 	cd lib/tlsconfig && go build -o ../../output/tlsconfig-example ./example
 
 release:
 	for os in darwin linux windows; do \
-		GOOS=$${os} go build -o ./output/ssl-cert-server_${VERSION}_$${os}_amd64 && \
+		GOOS=$${os} go build -o ./output/simplessl_${VERSION}_$${os}_amd64 && \
 		cd output && \
-		tar zcf ssl-cert-server_${VERSION}_$${os}_amd64.tar.gz ssl-cert-server_${VERSION}_$${os}_amd64 && \
+		tar zcf simplessl_${VERSION}_$${os}_amd64.tar.gz simplessl_${VERSION}_$${os}_amd64 && \
 		cd ..; \
 	done
 
 clean:
-	rm -rf ./ssl-cert-server ./ssl-cert-server.pid ./output/*
+	rm -rf ./simplessl ./simplessl.pid ./output/*
 
 all : build release clean
 

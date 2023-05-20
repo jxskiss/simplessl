@@ -1,6 +1,6 @@
 version: "2"
 listen: "127.0.0.1:8999"
-pid_file: "ssl-cert-server.pid"
+pid_file: "simplessl.pid"
 
 enable_sds: true
 sds_listen: "127.0.0.1:8998"
@@ -100,7 +100,7 @@ acme:
 # Explanations
 
 # version: Format version of the configuration file. New since version 0.6.0.
-# listen: The address ssl-cert-server should listen, be sure DON'T open the server to the world.
+# listen: The address simplessl server should listen, be sure DON'T open the server to the world.
 # pid_file: The pid file path, it's used when doing graceful restarts.
 
 # enable_sds: Enable Envoy SDS (secret discovery service) grpc service. Default false.

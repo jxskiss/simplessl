@@ -20,12 +20,12 @@ import (
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	secret "github.com/envoyproxy/go-control-plane/envoy/service/secret/v3"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/bus"
-	"github.com/jxskiss/ssl-cert-server/pkg/pb"
+	"github.com/jxskiss/simplessl/pkg/bus"
+	"github.com/jxskiss/simplessl/pkg/pb"
 )
 
 // Identifier is the identifier of the secret discovery service.
-var Identifier = "ssl-cert-server SDS/0000000-dev"
+var Identifier = "simplessl SDS/0000000-dev"
 
 // ValidationContextName is the name used as a resource name for the validation context.
 var ValidationContextName = "trusted_ca"

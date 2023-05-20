@@ -12,9 +12,9 @@ import (
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/bus"
-	"github.com/jxskiss/ssl-cert-server/pkg/config"
-	"github.com/jxskiss/ssl-cert-server/pkg/pb"
+	"github.com/jxskiss/simplessl/pkg/bus"
+	"github.com/jxskiss/simplessl/pkg/config"
+	"github.com/jxskiss/simplessl/pkg/pb"
 )
 
 type ManagedCertManager interface {

@@ -6,9 +6,9 @@ import (
 	"github.com/jxskiss/gopkg/v2/zlog"
 	"github.com/jxskiss/mcli"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/config"
-	"github.com/jxskiss/ssl-cert-server/pkg/utils"
-	"github.com/jxskiss/ssl-cert-server/server"
+	"github.com/jxskiss/simplessl/pkg/config"
+	"github.com/jxskiss/simplessl/pkg/utils"
+	"github.com/jxskiss/simplessl/server"
 )
 
 func GenerateSelfSignedCertificate() {
@@ -69,14 +69,14 @@ func SelfSignCACertificate() {
 
 var (
 	defaultClientHosts = []string{
-		"ssl-cert-server.internal",
-		"client.ssl-cert-server.internal",
-		"sds-client.ssl-cert-server.internal",
+		"simplessl.internal",
+		"client.simplessl.internal",
+		"sds-client.simplessl.internal",
 	}
 	defaultServerHosts = []string{
-		"ssl-cert-server.internal",
-		"server.ssl-cert-server.internal",
-		"sds-server.ssl-cert-server.internal",
+		"simplessl.internal",
+		"server.simplessl.internal",
+		"sds-server.simplessl.internal",
 	}
 )
 

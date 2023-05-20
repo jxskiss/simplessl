@@ -1,15 +1,15 @@
-module github.com/jxskiss/ssl-cert-server
+module github.com/jxskiss/simplessl
 
 go 1.18
 
 require (
 	github.com/cloudflare/tableflip v1.2.3
 	github.com/envoyproxy/go-control-plane v0.11.0
-	github.com/go-acme/lego/v4 v4.10.2
+	github.com/go-acme/lego/v4 v4.11.0
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/jxskiss/gopkg/v2 v2.8.2
 	github.com/jxskiss/mcli v0.7.0
-	github.com/mholt/acmez v1.1.0
+	github.com/mholt/acmez v1.1.1
 	github.com/montag451/go-eventbus v0.0.0-20221122231605-fe0e69e79461
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.8.2
@@ -20,7 +20,7 @@ require (
 	golang.org/x/net v0.8.0
 	google.golang.org/grpc v1.54.0
 	google.golang.org/protobuf v1.30.0
-	storj.io/drpc v0.0.32
+	storj.io/drpc v0.0.33
 )
 
 require (
@@ -108,6 +108,7 @@ require (
 	github.com/nrdcg/freemyip v0.2.0 // indirect
 	github.com/nrdcg/goinwx v0.8.1 // indirect
 	github.com/nrdcg/namesilo v0.2.1 // indirect
+	github.com/nrdcg/nodion v0.1.0 // indirect
 	github.com/nrdcg/porkbun v0.1.1 // indirect
 	github.com/oracle/oci-go-sdk v24.3.0+incompatible // indirect
 	github.com/ovh/go-ovh v1.1.0 // indirect
@@ -119,6 +120,7 @@ require (
 	github.com/sacloud/iaas-api-go v1.3.2 // indirect
 	github.com/sacloud/packages-go v0.0.5 // indirect
 	github.com/scaleway/scaleway-sdk-go v1.0.0-beta.9 // indirect
+	github.com/simplesurance/bunny-go v0.0.0-20221115111006-e11d9dc91f04 // indirect
 	github.com/sirupsen/logrus v1.9.0 // indirect
 	github.com/smartystreets/go-aws-auth v0.0.0-20180515143844-0c1422d1fdb9 // indirect
 	github.com/softlayer/softlayer-go v1.0.6 // indirect

@@ -16,7 +16,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/net/idna"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/pb"
+	"github.com/jxskiss/simplessl/pkg/pb"
 )
 
 const (

@@ -15,9 +15,9 @@ import (
 	"golang.org/x/net/idna"
 	"storj.io/drpc/drpcerr"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/config"
-	"github.com/jxskiss/ssl-cert-server/pkg/pb"
-	"github.com/jxskiss/ssl-cert-server/pkg/utils"
+	"github.com/jxskiss/simplessl/pkg/config"
+	"github.com/jxskiss/simplessl/pkg/pb"
+	"github.com/jxskiss/simplessl/pkg/utils"
 )
 
 type Server struct {

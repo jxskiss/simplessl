@@ -1,4 +1,4 @@
-module github.com/jxskiss/ssl-cert-server/lib/tlsconfig
+module github.com/jxskiss/simplessl/lib/tlsconfig
 
 go 1.16
 

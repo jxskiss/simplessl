@@ -71,7 +71,7 @@ function _M.new(options)
         ngx_log(ngx_ERR, "failed to create lru cache")
     end
 
-    ngx_log(ngx_NOTICE, "initialized ssl-cert-server with backend ", opts.backend)
+    ngx_log(ngx_NOTICE, "initialized simplessl with backend ", opts.backend)
     return setmetatable({ opts = opts }, { __index = _M })
 end
 

@@ -16,8 +16,8 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ocsp"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/bus"
-	"github.com/jxskiss/ssl-cert-server/pkg/utils"
+	"github.com/jxskiss/simplessl/pkg/bus"
+	"github.com/jxskiss/simplessl/pkg/utils"
 )
 
 const (
@@ -80,7 +80,7 @@ func (p *ocspManagerImpl) NotifyCertChange(certKey string, getCert CertFunc) {
 func (p *ocspManagerImpl) GetOCSPStapling(ctx context.Context, certKey string, fp string, checkCachedCert CertFunc) (der []byte, nextUpdate time.Time, err error) {
 	der, nextUpdate, err = p._getOCSPStapling(certKey, fp)
 
-	// If ssl-cert-server is restarted, clients may have already cached
+	// If simplessl is restarted, clients may have already cached
 	// the certificate, then OCSP stapling requests may arrive before
 	// requesting the corresponding certificate, in which case,
 	// OCSP stapling won't be cached before the certificate being loaded.

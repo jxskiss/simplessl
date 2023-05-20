@@ -19,10 +19,10 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/exp/slices"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/bus"
-	"github.com/jxskiss/ssl-cert-server/pkg/config"
-	"github.com/jxskiss/ssl-cert-server/pkg/pb"
-	"github.com/jxskiss/ssl-cert-server/pkg/utils"
+	"github.com/jxskiss/simplessl/pkg/bus"
+	"github.com/jxskiss/simplessl/pkg/config"
+	"github.com/jxskiss/simplessl/pkg/pb"
+	"github.com/jxskiss/simplessl/pkg/utils"
 )
 
 const acmeCheckRenewInterval = 10 * time.Minute

@@ -5,7 +5,7 @@ import (
 
 	"github.com/go-redis/redis/v8"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/config"
+	"github.com/jxskiss/simplessl/pkg/config"
 )
 
 func NewRedisCache(cfg config.RedisConfig) (Storage, error) {

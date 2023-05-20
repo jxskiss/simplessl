@@ -18,7 +18,7 @@ import (
 
 	"golang.org/x/net/idna"
 
-	"github.com/jxskiss/ssl-cert-server/lib/tlsconfig/proto"
+	"github.com/jxskiss/simplessl/lib/tlsconfig/proto"
 )
 
 // ALPNProto is the ALPN protocol name used by a CA server when validating

@@ -3,7 +3,7 @@ package server
 import (
 	"fmt"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/pb"
+	"github.com/jxskiss/simplessl/pkg/pb"
 )
 
 func getCertKey(certTyp pb.Certificate_Type, certName string) string {

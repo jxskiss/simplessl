@@ -12,7 +12,7 @@ import (
 	"github.com/mholt/acmez"
 	"github.com/mholt/acmez/acme"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/utils"
+	"github.com/jxskiss/simplessl/pkg/utils"
 )
 
 var acmeHTTPClient *http.Client
@@ -51,7 +51,7 @@ func (p *acmeImpl) newACMEClient(ctx context.Context, certName string) (account 
 		Client: &acme.Client{
 			Directory:  p.cfg.ACME.DirectoryURL,
 			HTTPClient: acmeHTTPClient,
-			UserAgent:  "ssl-cert-server",
+			UserAgent:  "simplessl",
 			Logger:     zlog.Named("acmez"),
 		},
 		ChallengeSolvers: map[string]acmez.Solver{

@@ -2,7 +2,7 @@ package config
 
 type v1Config struct {
 	Listen  string `yaml:"listen" default:"127.0.0.1:8999"`
-	PIDFile string `yaml:"pid_file" default:"ssl-cert-server.pid"`
+	PIDFile string `yaml:"pid_file" default:"simplessl.pid"`
 
 	Storage struct {
 		Type     string      `yaml:"type" default:"dir_cache"`

@@ -8,7 +8,7 @@ temp/
 .idea/
 .vscode/
 *.exe
-ssl-cert-server
-ssl-cert-server.pid
+simplessl
+simplessl.pid
 secret-dir/*
 !secret-dir/.gitkeep

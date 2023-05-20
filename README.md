@@ -1,15 +1,17 @@
-# ssl-cert-server
+# simplessl
 
-On the fly free SSL registration and renewal inside [OpenResty/nginx](http://openresty.org)
-and any Golang TLS program, with [Let's Encrypt](https://letsencrypt.org).
+On the fly free SSL registration and renewal inside [OpenResty/nginx](http://openresty.org),
+[Envoy](https://www.envoyproxy.io/) and any Golang TLS program, with [Let's Encrypt](https://letsencrypt.org).
 
-The ssl-cert-server automatically and transparently issues SSL certificates from Let's Encrypt
+The simplessl automatically and transparently issues SSL certificates from Let's Encrypt
 as requests are received, when a certificate needs a renewal, it automatically renews the
 certificate asynchronously in background.
 
 The OpenResty plugin uses the `ssl_certificate_by_lua` functionality in OpenResty 1.9.7.2+.
 
-By using ssl-cert-server to register SSL certificates with Let's Encrypt,
+For Envoy, simplessl implements SDS server to provide SSL certificates to the data plane.
+
+By using simplessl to register SSL certificates with Let's Encrypt,
 you agree to the [Let's Encrypt Subscriber Agreement](https://letsencrypt.org/repository/).
 
 Disclaimer: I got initial inspires and stole some code from the awesome
@@ -60,10 +62,10 @@ without any reloading:
 
 - OpenResty per-worker LRU cache with cdata pointer (Golang client uses in memory copy-on-write cache), fallback to
 - OpenResty shared memory cache (not needed for Golang client), fallback to
-- In-memory cache within backend ssl-cert-server, finally go to
+- In-memory cache within backend simplessl server, finally go to
 - Storage or ACME server.
 
-The cached certificates and OCSP staple is automatically renewed and refreshed in backend ssl-cert-server.
+The cached certificates and OCSP staple is automatically renewed and refreshed in backend simplessl server.
 
 ## Status
 
@@ -79,9 +81,9 @@ however this is a spare-time project and has not known deployment for large prod
 ### For OpenResty
 
 The lua library is published with [OPM](https://opm.openresty.org/),
-the following command will install the ssl-cert-server library, as well as it's dependency "lua-resty-http".
+the following command will install the simplessl library, as well as it's dependency "lua-resty-http".
 
-`opm get jxskiss/ssl-cert-server`
+`opm get jxskiss/simplessl`
 
 If you do not have opm, you can install the lua libraries manually, take OpenResty
 installed under "/usr/local/openresty" as example (you may need to use sudo to grant proper permission):
@@ -92,22 +94,22 @@ cd /usr/local/openresty/site/lualib/resty
 wget https://raw.githubusercontent.com/ledgetech/lua-resty-http/v0.16.1/lib/resty/http.lua
 wget https://raw.githubusercontent.com/ledgetech/lua-resty-http/v0.16.1/lib/resty/http_connect.lua
 wget https://raw.githubusercontent.com/ledgetech/lua-resty-http/v0.16.1/lib/resty/http_headers.lua
-wget https://raw.githubusercontent.com/jxskiss/ssl-cert-server/master/lib/resty/ssl-cert-server.lua
+wget https://raw.githubusercontent.com/jxskiss/simplessl/master/lib/resty/simplessl.lua
 ```
 
 ### For Golang TLS program
 
-`go get github.com/jxskiss/ssl-cert-server/lib/tlsconfig@latest`
+`go get github.com/jxskiss/simplessl/lib/tlsconfig@latest`
 
 See the following doc for example of using `lib/tlsconfig`.
 
-### Run ssl-cert-server
+### Run simplessl
 
 Download the cert server service binary file, either build by yourself:
 
-`go install github.com/jxskiss/ssl-cert-server@latest`
+`go install github.com/jxskiss/simplessl@latest`
 
-or download prebuilt binaries from the [release page](https://github.com/jxskiss/ssl-cert-server/releases).
+or download prebuilt binaries from the [release page](https://github.com/jxskiss/simplessl/releases).
 
 Copy `example.conf.yaml` to your favorite location and edit it to fit your need.
 Configuration options are explained in the example file.
@@ -115,10 +117,10 @@ Configuration options are explained in the example file.
 Run your cert server:
 
 ```bash
-/path/to/ssl-cert-server run -c /path/to/your/conf.yaml
+/path/to/simplessl run -c /path/to/your/conf.yaml
 ```
 
-Or to generate a self-signed certificate, see `ssl-cert-server generate-self-signed -h`.
+Or to generate a self-signed certificate, see `simplessl generate-self-signed -h`.
 
 Now you can configure your OpenResty or Golang program to use the cert server for SSL certificates,
 see the following examples.
@@ -149,7 +151,7 @@ http {
 
         -- Initialize backend certificate server instance.
         -- Change lru_maxitems according to your deployment, default 100.
-        cert_server = (require "resty.ssl-cert-server").new({
+        simplessl = (require "resty.simplessl").new({
             backend = '127.0.0.1:8999',
             allow_domain = allow_domain,
             lru_maxitems = 100,
@@ -167,11 +169,11 @@ http {
 
         # Dynamic handler for issuing or returning certs for SNI domains.
         ssl_certificate_by_lua_block {
-            cert_server:ssl_certificate()
+            simplessl:ssl_certificate()
         }
 
         # Fallback certificate required by nginx, self-signed is ok.
-        # ssl-cert-server generate-self-signed \
+        # simplessl generate-self-signed \
         #   -days 3650 \
         #   -cert-out /etc/nginx/certs/fallback-self-signed.crt \
         #   -key-out /etc/nginx/certs/fallback-self-signed.key
@@ -193,7 +195,7 @@ http {
         # Endpoint used for performing domain verification with Let's Encrypt.
         location /.well-known/acme-challenge/ {
             content_by_lua_block {
-                cert_server:challenge_server()
+                simplessl:challenge_server()
             }
         }
     }

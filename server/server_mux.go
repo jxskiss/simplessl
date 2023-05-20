@@ -12,7 +12,7 @@ import (
 	"storj.io/drpc/drpchttp"
 	"storj.io/drpc/drpcmux"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/pb"
+	"github.com/jxskiss/simplessl/pkg/pb"
 )
 
 const (
@@ -91,10 +91,10 @@ func (p *v1APIImpl) HandleACMEChallenge(w http.ResponseWriter, r *http.Request) 
 // HandleCertificate handles legacy requests of SSL certificate.
 //
 // Possible responses are:
-// - 200 with the certificate data as response
-// - 400 the requested domain name is invalid or not permitted
-// - 500 which indicates the server failed to process the request,
-//       in such case, the body will be filled with the error message
+//   - 200 with the certificate data as response
+//   - 400 the requested domain name is invalid or not permitted
+//   - 500 which indicates the server failed to process the request,
+//     in such case, the body will be filled with the error message
 func (p *v1APIImpl) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	domain := strings.TrimPrefix(r.URL.Path, "/cert/")
@@ -134,10 +134,10 @@ func (p *v1APIImpl) HandleCertificate(w http.ResponseWriter, r *http.Request) {
 // HandleOCSPStapling handles legacy requests of OCSP stapling.
 //
 // Possible responses are:
-// - 200 with the OCSP response as body
-// - 204 without body, which indicates OCSP stapling for the requested domain
-//       is not available, temporarily or permanently
-// - 400 which indicates the requested domain name is invalid or not permitted
+//   - 200 with the OCSP response as body
+//   - 204 without body, which indicates OCSP stapling for the requested domain
+//     is not available, temporarily or permanently
+//   - 400 which indicates the requested domain name is invalid or not permitted
 func (p *v1APIImpl) HandleOCSPStapling(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/ocsp/")
 	fingerprint := r.URL.Query().Get("fp")

@@ -16,11 +16,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
-	pkgbus "github.com/jxskiss/ssl-cert-server/pkg/bus"
-	"github.com/jxskiss/ssl-cert-server/pkg/config"
-	"github.com/jxskiss/ssl-cert-server/pkg/utils"
-	pkgsds "github.com/jxskiss/ssl-cert-server/sds"
-	"github.com/jxskiss/ssl-cert-server/server"
+	pkgbus "github.com/jxskiss/simplessl/pkg/bus"
+	"github.com/jxskiss/simplessl/pkg/config"
+	"github.com/jxskiss/simplessl/pkg/utils"
+	pkgsds "github.com/jxskiss/simplessl/sds"
+	"github.com/jxskiss/simplessl/server"
 )
 
 // TODO: refactor RunServer into smaller parts.

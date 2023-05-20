@@ -20,9 +20,9 @@ import (
 	"github.com/jxskiss/gopkg/v2/zlog"
 	"go.uber.org/zap"
 
-	"github.com/jxskiss/ssl-cert-server/pkg/config"
-	"github.com/jxskiss/ssl-cert-server/pkg/pb"
-	"github.com/jxskiss/ssl-cert-server/pkg/utils"
+	"github.com/jxskiss/simplessl/pkg/config"
+	"github.com/jxskiss/simplessl/pkg/pb"
+	"github.com/jxskiss/simplessl/pkg/utils"
 )
 
 const SelfSignedCertKey = "self_signed"

@@ -1,5 +1,5 @@
 syntax = "proto3";
-option go_package = "github.com/jxskiss/ssl-cert-server/pkg/pb";
+option go_package = "github.com/jxskiss/simplessl/pkg/pb";
 
 package sslcertserver;
 
