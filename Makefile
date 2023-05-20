@@ -6,6 +6,13 @@ gen_proto:
 		--go-drpc_out=. --go-drpc_opt=paths=source_relative \
 		api.proto
 
+gen_self_signed_certificates:
+	go build -o ./output/ssl-cert-server
+	./output/ssl-cert-server self-sign ca
+	./output/ssl-cert-server self-sign sds-client
+	./output/ssl-cert-server self-sign sds-server
+
+
 build:
 	go build -o output/ssl-cert-server
 

@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,6 +19,36 @@ import (
 
 	"github.com/jxskiss/gopkg/v2/perf/fastrand"
 )
+
+func LoadLocalTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
+	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, err
+	}
+
+	var caPool *x509.CertPool
+	if caFile != "" {
+		var casCertPEM []byte
+		casCertPEM, err = os.ReadFile(caFile)
+		if err != nil {
+			return nil, err
+		}
+		caPool = x509.NewCertPool()
+		if !caPool.AppendCertsFromPEM(casCertPEM) {
+			return nil, fmt.Errorf("cannot load CA file: %v", caFile)
+		}
+	}
+
+	tlsConfig := &tls.Config{
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		Certificates: []tls.Certificate{certificate},
+		ClientCAs:    caPool,
+		RootCAs:      caPool,
+		MinVersion:   tls.VersionTLS12,
+		MaxVersion:   tls.VersionTLS12,
+	}
+	return tlsConfig, nil
+}
 
 func ToPEMBlock(data interface{}) *pem.Block {
 	var pemBlock *pem.Block

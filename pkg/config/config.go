@@ -7,6 +7,12 @@ type Config struct {
 	Listen  string `yaml:"listen" default:"127.0.0.1:8999"`
 	PIDFile string `yaml:"pid_file" default:"ssl-cert-server.pid"`
 
+	EnableSDS     bool   `yaml:"enable_sds"`
+	SDSListen     string `yaml:"sds_listen" default:"127.0.0.1:8998"`
+	SDSCACert     string `yaml:"sds_ca_cert" default:"./secret-dir/ca.cert"`
+	SDSServerCert string `yaml:"sds_server_cert" default:"./secret-dir/sds-server.cert"`
+	SDSServerKey  string `yaml:"sds_server_key" default:"./secret-dir/sds-server.key"`
+
 	Storage struct {
 		Type     string      `yaml:"type" default:"dir_cache"`
 		DirCache string      `yaml:"dir_cache" default:"./secret-dir"`

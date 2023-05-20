@@ -2,6 +2,12 @@ version: "2"
 listen: "127.0.0.1:8999"
 pid_file: "ssl-cert-server.pid"
 
+enable_sds: true
+sds_listen: "127.0.0.1:8998"
+sds_ca_cert: "./secret-dir/ca.cert"
+sds_server_cert: "./secret-dir/sds-server.cert"
+sds_server_key: "./secret-dir/sds-server.key"
+
 storage:
   type: "dir_cache"  # or redis
   dir_cache: "./secret-dir"
@@ -96,6 +102,12 @@ acme:
 # version: Format version of the configuration file. New since version 0.6.0.
 # listen: The address ssl-cert-server should listen, be sure DON'T open the server to the world.
 # pid_file: The pid file path, it's used when doing graceful restarts.
+
+# enable_sds: Enable Envoy SDS (secret discovery service) grpc service. Default false.
+# sds_listen: Specifies the SDS service listen address. Require enable_sds to be true.
+# sds_ca_cert: Path of the root certificate to verify SDS grpc client.
+# sds_server_cert: Path of the server certificate for SDS grpc server.
+# sds_server_key: Path of the private key for SDS grpc server.
 
 # storage: Cache storage settings.
 # storage.type: "dir_cache" or "redis"

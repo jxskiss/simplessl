@@ -19,6 +19,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/exp/slices"
 
+	"github.com/jxskiss/ssl-cert-server/pkg/bus"
 	"github.com/jxskiss/ssl-cert-server/pkg/config"
 	"github.com/jxskiss/ssl-cert-server/pkg/pb"
 	"github.com/jxskiss/ssl-cert-server/pkg/utils"
@@ -33,12 +34,14 @@ type ACMEManager interface {
 
 func NewACMEManager(
 	cfg *config.Config,
+	bus bus.EventBus,
 	storMgr StorageManager,
 	ocsp OCSPManager,
 	httpSolver HTTPAndTLSALPNSolver,
 ) ACMEManager {
 	impl := &acmeImpl{
 		cfg:        cfg,
+		bus:        bus,
 		storMgr:    storMgr,
 		ocsp:       ocsp,
 		httpSolver: httpSolver,
@@ -50,6 +53,7 @@ func NewACMEManager(
 
 type acmeImpl struct {
 	cfg     *config.Config
+	bus     bus.EventBus
 	storMgr StorageManager
 	ocsp    OCSPManager
 
@@ -70,8 +74,8 @@ func (p *acmeImpl) GetNamedCertificate(ctx context.Context, name string, createI
 		return nil, err
 	}
 
-	ocspKey := getOCSPKey(pb.Certificate_ACME_NAMED, name)
-	p.ocsp.Watch(ctx, ocspKey, func() (*tls.Certificate, error) {
+	certKey := getCertKey(pb.Certificate_ACME_NAMED, name)
+	p.ocsp.Watch(ctx, certKey, func() (*tls.Certificate, error) {
 		// When watching from certificate manager,
 		// there is no need to trigger watching again,
 		// use the internal method here.
@@ -149,8 +153,8 @@ func (p *acmeImpl) GetOnDemandCertificate(ctx context.Context, domain string, cr
 		return nil, err
 	}
 
-	ocspKey := getOCSPKey(pb.Certificate_ACME_ON_DEMAND, domain)
-	p.ocsp.Watch(ctx, ocspKey, func() (*tls.Certificate, error) {
+	certKey := getCertKey(pb.Certificate_ACME_ON_DEMAND, domain)
+	p.ocsp.Watch(ctx, certKey, func() (*tls.Certificate, error) {
 		// When watching from certificate manager,
 		// there is no need to trigger watching again,
 		// use the internal method here.
@@ -248,7 +252,7 @@ func (p *acmeImpl) getAccountPrivateKey(ctx context.Context, acc *config.ACMEAcc
 			return nil, err
 		}
 		if block.Type != "EC PRIVATE KEY" {
-			return nil, fmt.Errorf("unexpected privat key type: %v", block.Type)
+			return nil, fmt.Errorf("unexpected private key type: %v", block.Type)
 		}
 		return x509.ParseECPrivateKey(block.Bytes)
 	}
@@ -327,6 +331,8 @@ func (p *acmeImpl) doRenew() {
 			return true
 		}
 		if time.Until(cert.Leaf.NotAfter) > renewDur {
+			p.log.Debugf("certificate does not need to renew: type= %v, name= %v",
+				acmeCert.typ, acmeCert.name)
 			return true
 		}
 		if !acmeCert.renewing.CompareAndSwap(false, true) {
@@ -404,8 +410,8 @@ func (p *acmeImpl) renewCertificate(acmeCert *acmeCert) (success bool) {
 
 	// notify OCSP stapling manager
 	acmeCertName := acmeCert.name
-	ocspKey := getOCSPKey(certTyp, acmeCertName)
-	p.ocsp.NotifyCertChange(ocspKey, func() (*tls.Certificate, error) {
+	certKey := getCertKey(certTyp, acmeCertName)
+	p.ocsp.NotifyCertChange(certKey, func() (*tls.Certificate, error) {
 		ctx := context.Background()
 		switch certTyp {
 		case pb.Certificate_ACME_ON_DEMAND:
@@ -415,5 +421,21 @@ func (p *acmeImpl) renewCertificate(acmeCert *acmeCert) (success bool) {
 		}
 		panic("bug: unexpected certificate type")
 	})
+	p.publishRenewEvent(certTyp, acmeCertName)
 	return true
+}
+
+func (p *acmeImpl) publishRenewEvent(typ pb.Certificate_Type, name string) {
+	switch typ {
+	case pb.Certificate_ACME_NAMED,
+		pb.Certificate_ACME_ON_DEMAND:
+		certKey := getCertKey(typ, name)
+		pubErr := p.bus.PublishCertChange(certKey, bus.ChangeType_Cert)
+		if pubErr != nil {
+			p.log.With(zap.Error(pubErr), zap.String("certKey", certKey)).
+				Error("failed publish acme cert renew change")
+		}
+	default:
+		p.log.Errorf("got unexpected certificate type: %v", typ)
+	}
 }
