@@ -1,5 +1,16 @@
 # simplessl
 
+**NOTE**
+
+This project is not maintained, technologies of reverse proxy and load balancer changed a lot
+in recent years.
+
+IMHO. there are many better solutions than nginx+lua nowadays, such as
+[Envoy](https://github.com/envoyproxy/envoy), [Caddy](https://github.com/caddyserver/caddy),
+[nginx-ui](https://github.com/0xJacky/nginx-ui), or the cloud-native things.
+
+---
+
 On the fly free SSL registration and renewal inside [OpenResty/nginx](http://openresty.org),
 [Envoy](https://www.envoyproxy.io/) and any Golang TLS program, with [Let's Encrypt](https://letsencrypt.org).
 
